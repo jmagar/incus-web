@@ -51,6 +51,8 @@ TS_AUTHKEY=tskey-auth-example
 CONTAINER_NAME=incus-web
 IMAGE=images:debian/trixie/cloud
 RECREATE=0
+INCUS_NETWORK=incusbr0
+CONTAINER_IPV4=
 TS_HOSTNAME=incus-web
 TS_EXTRA_ARGS=--accept-routes=false
 TAILSCALE_SERVE_PORT=443
@@ -65,6 +67,8 @@ Important variables:
 
 - `TS_AUTHKEY`: required Tailscale auth key for `tailscale up`.
 - `CONTAINER_NAME`: local Incus container name.
+- `INCUS_NETWORK`: managed Incus bridge used for fallback static IPv4.
+- `CONTAINER_IPV4`: optional static IPv4 to assign if DHCP does not come up.
 - `TS_HOSTNAME`: tailnet hostname assigned to the container.
 - `TAILSCALE_SERVE_PORT`: HTTPS port exposed by `tailscale serve`.
 - `HOST_WORKSPACE`: host path mounted into the container.

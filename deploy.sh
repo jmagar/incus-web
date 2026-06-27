@@ -103,7 +103,17 @@ wait_for_running() {
 wait_for_network() {
   local name="$1"
 
-  for _ in $(seq 1 90); do
+  for _ in $(seq 1 45); do
+    if incus_cmd exec "$name" -- getent hosts deb.debian.org >/dev/null 2>&1; then
+      return
+    fi
+    sleep 2
+  done
+
+  log "$name does not have DHCP/DNS yet; trying static IPv4 fallback"
+  configure_static_ipv4 "$name"
+
+  for _ in $(seq 1 30); do
     if incus_cmd exec "$name" -- getent hosts deb.debian.org >/dev/null 2>&1; then
       return
     fi
@@ -111,6 +121,85 @@ wait_for_network() {
   done
 
   die "$name does not have working DNS/network access"
+}
+
+prefix_len_to_netmask() {
+  local bits="$1"
+  local mask=""
+  local value
+
+  for value in 1 2 3 4; do
+    if (( bits >= 8 )); then
+      mask="${mask}255"
+      bits=$((bits - 8))
+    elif (( bits > 0 )); then
+      mask="${mask}$((256 - (1 << (8 - bits))))"
+      bits=0
+    else
+      mask="${mask}0"
+    fi
+    [[ "$value" == "4" ]] || mask="${mask}."
+  done
+
+  printf '%s\n' "$mask"
+}
+
+pick_static_ipv4() {
+  local bridge_cidr="$1"
+  local gateway="${bridge_cidr%/*}"
+  local prefix="${gateway%.*}"
+  local seed
+  local candidate
+
+  if [[ -n "${CONTAINER_IPV4:-}" ]]; then
+    printf '%s\n' "$CONTAINER_IPV4"
+    return
+  fi
+
+  seed="$(printf '%s' "$CONTAINER_NAME" | cksum | awk '{print $1}')"
+  for offset in $(seq 0 149); do
+    candidate="${prefix}.$((50 + ((seed + offset) % 150)))"
+    if ! ping -c 1 -W 1 "$candidate" >/dev/null 2>&1; then
+      printf '%s\n' "$candidate"
+      return
+    fi
+  done
+
+  die "could not find an unused IPv4 address on $INCUS_NETWORK; set CONTAINER_IPV4 in .env"
+}
+
+configure_static_ipv4() {
+  local name="$1"
+  local bridge_cidr
+  local gateway
+  local prefix_len
+  local ipv4
+
+  bridge_cidr="$(incus_cmd network get "$INCUS_NETWORK" ipv4.address 2>/dev/null || true)"
+  [[ -n "$bridge_cidr" && "$bridge_cidr" != "none" && "$bridge_cidr" == */* ]] || die "could not read ipv4.address from Incus network $INCUS_NETWORK"
+
+  gateway="${bridge_cidr%/*}"
+  prefix_len="${bridge_cidr#*/}"
+  ipv4="$(pick_static_ipv4 "$bridge_cidr")"
+
+  log "configuring $name with static IPv4 $ipv4/$prefix_len via $gateway"
+  incus_cmd config device set "$name" eth0 ipv4.address "$ipv4" >/dev/null 2>&1 || true
+  container_bash "$name" "set -euo pipefail
+cat >/etc/systemd/network/10-incus-web-eth0.network <<EOF
+[Match]
+Name=eth0
+
+[Network]
+Address=$ipv4/$prefix_len
+Gateway=$gateway
+DNS=$gateway
+IPv6AcceptRA=yes
+EOF
+ip addr flush dev eth0 || true
+ip addr add '$ipv4/$prefix_len' dev eth0
+ip link set eth0 up
+ip route replace default via '$gateway' dev eth0
+printf 'nameserver $gateway\n' >/etc/resolv.conf"
 }
 
 container_bash() {
@@ -205,6 +294,7 @@ main() {
   CONTAINER_NAME="${CONTAINER_NAME:-incus-web}"
   IMAGE="${IMAGE:-images:debian/trixie/cloud}"
   RECREATE="${RECREATE:-0}"
+  INCUS_NETWORK="${INCUS_NETWORK:-incusbr0}"
   TS_HOSTNAME="${TS_HOSTNAME:-$CONTAINER_NAME}"
   TS_EXTRA_ARGS="${TS_EXTRA_ARGS:---accept-routes=false}"
   TAILSCALE_SERVE_PORT="${TAILSCALE_SERVE_PORT:-443}"
