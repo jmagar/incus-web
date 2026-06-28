@@ -278,7 +278,7 @@ container_bash() {
   incus_cmd exec "$name" -- bash -lc "$*"
 }
 
-push_secret_env() {
+push_tailscale_env() {
   local name="$1"
   local tmp_file
 
@@ -296,6 +296,52 @@ push_secret_env() {
   incus_cmd file push "$tmp_file" "$name/etc/incus-web/tailscale.env"
   incus_cmd exec "$name" -- chmod 600 /etc/incus-web/tailscale.env
   rm -f "$tmp_file"
+}
+
+push_oidc_env() {
+  local name="$1"
+  local tmp_file
+  local tmp_emails_file=""
+  local cookie_secret="$OIDC_COOKIE_SECRET"
+
+  if [[ -z "$cookie_secret" ]]; then
+    cookie_secret="$(head -c 32 /dev/urandom | base64 | tr -d '\n')"
+  fi
+
+  tmp_file="$(mktemp)"
+  chmod 600 "$tmp_file"
+  {
+    printf 'PUBLIC_URL=%q\n' "$PUBLIC_URL"
+    printf 'OIDC_ISSUER_URL=%q\n' "$OIDC_ISSUER_URL"
+    printf 'OIDC_CLIENT_ID=%q\n' "$OIDC_CLIENT_ID"
+    printf 'OIDC_CLIENT_SECRET=%q\n' "$OIDC_CLIENT_SECRET"
+    printf 'OIDC_COOKIE_SECRET=%q\n' "$cookie_secret"
+    printf 'OIDC_EMAIL_DOMAINS=%q\n' "$OIDC_EMAIL_DOMAINS"
+    printf 'OIDC_PROVIDER_DISPLAY_NAME=%q\n' "$OIDC_PROVIDER_DISPLAY_NAME"
+    printf 'OIDC_PROXY_PORT=%q\n' "$OIDC_PROXY_PORT"
+    printf 'OIDC_COOKIE_SECURE=%q\n' "$OIDC_COOKIE_SECURE"
+    printf 'OIDC_REVERSE_PROXY=%q\n' "$OIDC_REVERSE_PROXY"
+    printf 'OIDC_SKIP_PROVIDER_BUTTON=%q\n' "$OIDC_SKIP_PROVIDER_BUTTON"
+    printf 'OIDC_COOKIE_REFRESH=%q\n' "$OIDC_COOKIE_REFRESH"
+    printf 'OIDC_COOKIE_EXPIRE=%q\n' "$OIDC_COOKIE_EXPIRE"
+    printf 'WETTY_PORT=%q\n' "$WETTY_PORT"
+  } >"$tmp_file"
+
+  incus_cmd exec "$name" -- install -d -m 700 /etc/incus-web
+  incus_cmd file push "$tmp_file" "$name/etc/incus-web/oauth2-proxy.env"
+  incus_cmd exec "$name" -- chmod 600 /etc/incus-web/oauth2-proxy.env
+  rm -f "$tmp_file"
+
+  if [[ -n "$OIDC_ALLOWED_EMAILS" ]]; then
+    tmp_emails_file="$(mktemp)"
+    printf '%s\n' "$OIDC_ALLOWED_EMAILS" | sed 's/[ ,][ ,]*/\
+/g; /^$/d' >"$tmp_emails_file"
+    incus_cmd file push "$tmp_emails_file" "$name/etc/incus-web/authenticated-emails"
+    incus_cmd exec "$name" -- chmod 600 /etc/incus-web/authenticated-emails
+    rm -f "$tmp_emails_file"
+  else
+    incus_cmd exec "$name" -- rm -f /etc/incus-web/authenticated-emails
+  fi
 }
 
 provision_container() {
@@ -336,9 +382,6 @@ if ! command -v gh >/dev/null 2>&1; then
     >/etc/apt/sources.list.d/github-cli.list
   apt-get update
   apt-get install -y gh
-fi
-if ! command -v tailscale >/dev/null 2>&1; then
-  curl -fsSL https://tailscale.com/install.sh | sh
 fi
 if ! command -v claude >/dev/null 2>&1; then
   npm install -g @anthropic-ai/claude-code
@@ -401,12 +444,136 @@ RestartSec=2
 WantedBy=multi-user.target
 EOF
 systemctl daemon-reload
-systemctl enable --now tailscaled
 systemctl enable --now wetty"
+}
+
+ensure_tailscale_installed() {
+  local name="$1"
+
+  log "installing Tailscale"
+  container_bash "$name" 'set -euo pipefail
+if ! command -v tailscale >/dev/null 2>&1; then
+  curl -fsSL https://tailscale.com/install.sh | sh
+fi
+install -d -m 755 /etc/default
+cat >/etc/default/tailscaled <<'"'"'EOF'"'"'
+PORT="41641"
+FLAGS="--tun=userspace-networking"
+EOF
+systemctl daemon-reload
+systemctl enable --now tailscaled'
+}
+
+ensure_oauth2_proxy_installed() {
+  local name="$1"
+
+  log "installing oauth2-proxy"
+  container_bash "$name" "set -euo pipefail
+version='$OAUTH2_PROXY_VERSION'
+arch=\"\$(uname -m)\"
+case \"\$arch\" in
+  x86_64|amd64) arch=amd64 ;;
+  aarch64|arm64) arch=arm64 ;;
+  *) echo \"unsupported oauth2-proxy architecture: \$arch\" >&2; exit 1 ;;
+esac
+if command -v oauth2-proxy >/dev/null 2>&1 && oauth2-proxy --version 2>&1 | grep -Fq \"\$version\"; then
+  exit 0
+fi
+tmp_dir=\"\$(mktemp -d)\"
+trap 'rm -rf \"\$tmp_dir\"' EXIT
+archive=\"oauth2-proxy-\$version.linux-\$arch.tar.gz\"
+url=\"https://github.com/oauth2-proxy/oauth2-proxy/releases/download/\$version/\$archive\"
+curl -fsSL \"\$url\" -o \"\$tmp_dir/\$archive\"
+tar -xzf \"\$tmp_dir/\$archive\" -C \"\$tmp_dir\"
+install -m 755 \"\$tmp_dir/oauth2-proxy-\$version.linux-\$arch/oauth2-proxy\" /usr/local/bin/oauth2-proxy"
+}
+
+configure_oidc_proxy() {
+  local name="$1"
+
+  ensure_oauth2_proxy_installed "$name"
+  push_oidc_env "$name"
+
+  log "configuring oauth2-proxy in front of wetty"
+  # This block writes scripts that intentionally expand their variables later inside the container.
+  # shellcheck disable=SC2016
+  container_bash "$name" 'set -euo pipefail
+if systemctl list-unit-files tailscaled.service >/dev/null 2>&1; then
+  tailscale serve --https="${TAILSCALE_SERVE_PORT:-443}" off >/dev/null 2>&1 || true
+  systemctl disable --now tailscaled >/dev/null 2>&1 || true
+fi
+cat >/usr/local/bin/incus-web-oauth2-proxy-start <<'"'"'EOF'"'"'
+#!/usr/bin/env bash
+set -euo pipefail
+
+. /etc/incus-web/oauth2-proxy.env
+
+redirect_url="${PUBLIC_URL%/}/oauth2/callback"
+args=(
+  --provider=oidc
+  --provider-display-name="$OIDC_PROVIDER_DISPLAY_NAME"
+  --http-address="0.0.0.0:$OIDC_PROXY_PORT"
+  --upstream="http://127.0.0.1:$WETTY_PORT/"
+  --redirect-url="$redirect_url"
+  --oidc-issuer-url="$OIDC_ISSUER_URL"
+  --client-id="$OIDC_CLIENT_ID"
+  --client-secret="$OIDC_CLIENT_SECRET"
+  --cookie-secret="$OIDC_COOKIE_SECRET"
+  --cookie-secure="$OIDC_COOKIE_SECURE"
+  --reverse-proxy="$OIDC_REVERSE_PROXY"
+  --email-domain="$OIDC_EMAIL_DOMAINS"
+  --skip-provider-button="$OIDC_SKIP_PROVIDER_BUTTON"
+  --pass-access-token=true
+  --pass-authorization-header=true
+  --set-xauthrequest=true
+  --cookie-refresh="$OIDC_COOKIE_REFRESH"
+  --cookie-expire="$OIDC_COOKIE_EXPIRE"
+)
+
+if [[ -s /etc/incus-web/authenticated-emails ]]; then
+  args+=(--authenticated-emails-file=/etc/incus-web/authenticated-emails)
+fi
+
+exec /usr/local/bin/oauth2-proxy "${args[@]}"
+EOF
+chmod 755 /usr/local/bin/incus-web-oauth2-proxy-start
+cat >/etc/systemd/system/oauth2-proxy.service <<'"'"'EOF'"'"'
+[Unit]
+Description=OAuth2 Proxy for incus-web
+After=network-online.target wetty.service
+Wants=network-online.target wetty.service
+
+[Service]
+ExecStart=/usr/local/bin/incus-web-oauth2-proxy-start
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
+EOF
+systemctl daemon-reload
+systemctl enable --now oauth2-proxy'
+}
+
+configure_oidc_host_proxy() {
+  local name="$1"
+
+  if [[ -n "$OIDC_HOST_PORT" ]]; then
+    log "exposing oauth2-proxy on host $OIDC_HOST_BIND:$OIDC_HOST_PORT"
+    incus_cmd config device remove "$name" oidc-proxy >/dev/null 2>&1 || true
+    incus_cmd config device add "$name" oidc-proxy proxy \
+      "listen=tcp:$OIDC_HOST_BIND:$OIDC_HOST_PORT" \
+      "connect=tcp:127.0.0.1:$OIDC_PROXY_PORT"
+  else
+    incus_cmd config device remove "$name" oidc-proxy >/dev/null 2>&1 || true
+  fi
 }
 
 join_tailnet_and_serve() {
   local name="$1"
+
+  ensure_tailscale_installed "$name"
+  push_tailscale_env "$name"
 
   log "joining tailnet and configuring tailscale serve"
   # Expand the Tailscale values inside the container after sourcing the pushed env file.
@@ -417,6 +584,23 @@ tailscale up --authkey="$TS_AUTHKEY" --hostname="$TS_HOSTNAME" $TS_EXTRA_ARGS
 tailscale serve --bg --https="$TAILSCALE_SERVE_PORT" "http://127.0.0.1:$WETTY_PORT"
 rm -f /etc/incus-web/tailscale.env
 tailscale serve status'
+}
+
+configure_access() {
+  local name="$1"
+
+  case "$ACCESS_MODE" in
+    tailscale)
+      join_tailnet_and_serve "$name"
+      ;;
+    oidc)
+      configure_oidc_proxy "$name"
+      configure_oidc_host_proxy "$name"
+      ;;
+    *)
+      die "unsupported ACCESS_MODE: $ACCESS_MODE"
+      ;;
+  esac
 }
 
 validate_container() {
@@ -448,8 +632,17 @@ validate_container() {
   agent_check "gh --version"
   agent_check "claude --version"
   agent_check "codex --version"
-  container_bash "$name" "tailscale version >/dev/null"
-  container_bash "$name" "tailscale status >/dev/null"
+  case "$ACCESS_MODE" in
+    tailscale)
+      container_bash "$name" "tailscale version >/dev/null"
+      container_bash "$name" "tailscale status >/dev/null"
+      ;;
+    oidc)
+      container_bash "$name" "oauth2-proxy --version >/dev/null"
+      container_bash "$name" "systemctl is-active --quiet oauth2-proxy"
+      container_bash "$name" "curl -fsSI 'http://127.0.0.1:$OIDC_PROXY_PORT/oauth2/sign_in' >/dev/null"
+      ;;
+  esac
   agent_check "nc -vz -w 5 1.1.1.1 443"
   expect_blocked_lan 10.0.0.1 80
   expect_blocked_lan 172.16.0.1 80
@@ -470,16 +663,47 @@ main() {
   INCUS_PROFILE_NAME="${INCUS_PROFILE_NAME:-incus-web-agent}"
   INCUS_PROFILE_YAML="${INCUS_PROFILE_YAML:-$SCRIPT_DIR/incus-web-profile.yaml}"
   INCUS_PROFILE_URL="${INCUS_PROFILE_URL:-https://raw.githubusercontent.com/jmagar/incus-web/main/incus-web-profile.yaml}"
+  ACCESS_MODE="${ACCESS_MODE:-tailscale}"
   TS_HOSTNAME="${TS_HOSTNAME:-$CONTAINER_NAME}"
   TS_EXTRA_ARGS="${TS_EXTRA_ARGS:---accept-routes=false}"
   TAILSCALE_SERVE_PORT="${TAILSCALE_SERVE_PORT:-443}"
+  PUBLIC_URL="${PUBLIC_URL:-}"
+  OIDC_ISSUER_URL="${OIDC_ISSUER_URL:-}"
+  OIDC_CLIENT_ID="${OIDC_CLIENT_ID:-}"
+  OIDC_CLIENT_SECRET="${OIDC_CLIENT_SECRET:-}"
+  OIDC_COOKIE_SECRET="${OIDC_COOKIE_SECRET:-}"
+  OIDC_EMAIL_DOMAINS="${OIDC_EMAIL_DOMAINS:-*}"
+  OIDC_ALLOWED_EMAILS="${OIDC_ALLOWED_EMAILS:-}"
+  OIDC_PROVIDER_DISPLAY_NAME="${OIDC_PROVIDER_DISPLAY_NAME:-OIDC}"
+  OIDC_PROXY_PORT="${OIDC_PROXY_PORT:-4180}"
+  OIDC_HOST_BIND="${OIDC_HOST_BIND:-127.0.0.1}"
+  OIDC_HOST_PORT="${OIDC_HOST_PORT:-}"
+  OIDC_COOKIE_SECURE="${OIDC_COOKIE_SECURE:-true}"
+  OIDC_REVERSE_PROXY="${OIDC_REVERSE_PROXY:-true}"
+  OIDC_SKIP_PROVIDER_BUTTON="${OIDC_SKIP_PROVIDER_BUTTON:-true}"
+  OIDC_COOKIE_REFRESH="${OIDC_COOKIE_REFRESH:-1h}"
+  OIDC_COOKIE_EXPIRE="${OIDC_COOKIE_EXPIRE:-8h}"
+  OAUTH2_PROXY_VERSION="${OAUTH2_PROXY_VERSION:-v7.15.3}"
   WETTY_PORT="${WETTY_PORT:-3000}"
   WEB_USER="${WEB_USER:-agent}"
   HOST_WORKSPACE="${HOST_WORKSPACE:-$HOME/incus-web-data/$CONTAINER_NAME}"
   CONTAINER_WORKSPACE="${CONTAINER_WORKSPACE:-/workspace}"
   DISK_SHIFT="${DISK_SHIFT:-true}"
 
-  require_var TS_AUTHKEY
+  case "$ACCESS_MODE" in
+    tailscale)
+      require_var TS_AUTHKEY
+      ;;
+    oidc)
+      require_var PUBLIC_URL
+      require_var OIDC_ISSUER_URL
+      require_var OIDC_CLIENT_ID
+      require_var OIDC_CLIENT_SECRET
+      ;;
+    *)
+      die "ACCESS_MODE must be tailscale or oidc"
+      ;;
+  esac
 
   install_incus_if_needed
   ensure_incus_ready
@@ -496,13 +720,14 @@ main() {
       wait_for_running "$CONTAINER_NAME"
       wait_for_network "$CONTAINER_NAME"
       provision_container "$CONTAINER_NAME"
-      push_secret_env "$CONTAINER_NAME"
-      join_tailnet_and_serve "$CONTAINER_NAME"
+      configure_access "$CONTAINER_NAME"
       validate_container "$CONTAINER_NAME"
       log "ready"
       log "container: $CONTAINER_NAME"
       log "workspace: $HOST_WORKSPACE -> $CONTAINER_WORKSPACE"
-      log "tailnet host: $TS_HOSTNAME"
+      log "access mode: $ACCESS_MODE"
+      [[ "$ACCESS_MODE" == "tailscale" ]] && log "tailnet host: $TS_HOSTNAME"
+      [[ "$ACCESS_MODE" == "oidc" ]] && log "public URL: $PUBLIC_URL"
       return
     fi
   fi
@@ -525,14 +750,15 @@ main() {
 
   wait_for_network "$CONTAINER_NAME"
   provision_container "$CONTAINER_NAME"
-  push_secret_env "$CONTAINER_NAME"
-  join_tailnet_and_serve "$CONTAINER_NAME"
+  configure_access "$CONTAINER_NAME"
   validate_container "$CONTAINER_NAME"
 
   log "ready"
   log "container: $CONTAINER_NAME"
   log "workspace: $HOST_WORKSPACE -> $CONTAINER_WORKSPACE"
-  log "tailnet host: $TS_HOSTNAME"
+  log "access mode: $ACCESS_MODE"
+  [[ "$ACCESS_MODE" == "tailscale" ]] && log "tailnet host: $TS_HOSTNAME"
+  [[ "$ACCESS_MODE" == "oidc" ]] && log "public URL: $PUBLIC_URL"
 }
 
 main "$@"
