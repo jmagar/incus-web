@@ -1,0 +1,33 @@
+name: incus-web-agent
+description: "Incus system-container profile for the incus-web coding-agent demo"
+config:
+  boot.autostart: "false"
+
+  # This demo intentionally uses a privileged system container. Tailscale,
+  # systemd service management, and the browser-agent dev toolchain behave much
+  # more like the article's setup when the container has these capabilities.
+  security.privileged: "true"
+  security.nesting: "true"
+
+  # Conservative demo limits. Tune through this profile if the demo needs more.
+  limits.cpu: "2"
+  limits.memory: 4GiB
+  limits.memory.enforce: "hard"
+  limits.processes: "2048"
+
+devices:
+  # Dedicated managed bridge. deploy.sh creates agentbr0 and applies the
+  # agent-block-lan ACL that rejects RFC1918 and IPv4 link-local egress.
+  eth0:
+    type: nic
+    name: eth0
+    network: agentbr0
+
+  # Workspace mount. deploy.sh overrides source/path/shift at launch so the
+  # committed profile remains the visible source of truth while each run can
+  # point at its own host directory.
+  workspace:
+    type: disk
+    source: /srv/incus-web/default-workspace
+    path: /workspace
+    shift: "true"

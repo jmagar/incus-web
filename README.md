@@ -6,11 +6,14 @@ The deploy script is meant to be curlable, but it does not bake secrets into the
 
 ## What It Creates
 
-- An Incus container from `images:debian/trixie/cloud` by default.
+- An Incus container from `images:debian/trixie` by default.
 - A non-root terminal user named `agent` by default.
+- A small demo developer toolchain: Node/npm, Python, Go, Rust/Cargo, Git, GitHub CLI, Claude Code, and Codex CLI.
 - WeTTY listening inside the container on `127.0.0.1:3000`.
-- Tailscale running in userspace networking mode so the container can run unprivileged.
+- Tailscale running inside the privileged system container.
 - A `tailscale serve` HTTPS route for the web terminal.
+- A dedicated Incus bridge with an ACL that blocks direct egress to RFC1918 and IPv4 link-local LAN ranges.
+- A committed Incus profile YAML (`incus-web-profile.yaml`) as the source of truth for the container shape.
 - A host directory mounted into the container for persistent working files.
 
 ## Requirements
@@ -20,6 +23,8 @@ The deploy script is meant to be curlable, but it does not bake secrets into the
 - A Tailscale auth key. Ephemeral auth keys are recommended for disposable containers.
 
 If Incus is missing, `deploy.sh` attempts to install it with `apt-get` and initialize it with minimal defaults.
+
+The Incus container shape lives in `incus-web-profile.yaml`: profile config, the NIC, and the workspace disk device. Provisioning is intentionally handled by `deploy.sh` after the container launches. The demo does not use cloud-init, so packages, users, services, and agent setup stay in one procedural code path instead of drifting between image metadata and this repository.
 
 ## Quick Start
 
@@ -49,9 +54,14 @@ The script loads `.env` from the current directory.
 ```bash
 TS_AUTHKEY=tskey-auth-example
 CONTAINER_NAME=incus-web
-IMAGE=images:debian/trixie/cloud
+IMAGE=images:debian/trixie
 RECREATE=0
-INCUS_NETWORK=incusbr0
+INCUS_NETWORK=agentbr0
+INCUS_NETWORK_IPV4=198.18.0.1/15
+INCUS_ACL=agent-block-lan
+ENABLE_NETWORK_ACL=1
+INCUS_PROFILE_NAME=incus-web-agent
+INCUS_PROFILE_YAML=
 CONTAINER_IPV4=
 TS_HOSTNAME=incus-web
 TS_EXTRA_ARGS=--accept-routes=false
@@ -67,7 +77,13 @@ Important variables:
 
 - `TS_AUTHKEY`: required Tailscale auth key for `tailscale up`.
 - `CONTAINER_NAME`: local Incus container name.
-- `INCUS_NETWORK`: managed Incus bridge used for fallback static IPv4.
+- `IMAGE`: Incus image to launch. Defaults to a non-cloud Debian image because provisioning is handled by `deploy.sh`.
+- `INCUS_NETWORK`: managed Incus bridge used by the container.
+- `INCUS_NETWORK_IPV4`: IPv4 CIDR used when creating the bridge. The default uses the lab/benchmarking range from the Incus jail article to avoid common home LAN collisions.
+- `INCUS_ACL`: Incus network ACL name for the LAN egress deny list.
+- `ENABLE_NETWORK_ACL`: set to `0` to skip bridge/ACL management when using a pre-existing custom network.
+- `INCUS_PROFILE_NAME`: Incus profile name created/updated from `incus-web-profile.yaml`.
+- `INCUS_PROFILE_YAML`: optional path to a local profile YAML. When unset, `deploy.sh` uses the repo file next to the script or downloads it for curl-piped runs.
 - `CONTAINER_IPV4`: optional static IPv4 to assign if DHCP does not come up.
 - `TS_HOSTNAME`: tailnet hostname assigned to the container.
 - `TAILSCALE_SERVE_PORT`: HTTPS port exposed by `tailscale serve`.

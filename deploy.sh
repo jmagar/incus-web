@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+
 log() {
   printf '[incus-web] %s\n' "$*"
 }
@@ -85,12 +87,80 @@ ensure_incus_ready() {
   die "incus did not become usable after initialization"
 }
 
+ensure_agent_network() {
+  if [[ "$ENABLE_NETWORK_ACL" != "1" ]]; then
+    return
+  fi
+
+  if ! incus_cmd network acl show "$INCUS_ACL" >/dev/null 2>&1; then
+    log "creating Incus network ACL $INCUS_ACL"
+    incus_cmd network acl create "$INCUS_ACL"
+  fi
+
+  incus_cmd network acl edit "$INCUS_ACL" <<EOF
+name: $INCUS_ACL
+description: "Deny egress from incus-web agent containers to local/LAN ranges while allowing Internet."
+egress:
+  - action: reject
+    state: enabled
+    description: "Block RFC1918 private LAN ranges"
+    destination: 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16
+  - action: reject
+    state: enabled
+    description: "Block IPv4 link-local"
+    destination: 169.254.0.0/16
+ingress: []
+config: {}
+EOF
+
+  if ! incus_cmd network show "$INCUS_NETWORK" >/dev/null 2>&1; then
+    log "creating Incus bridge $INCUS_NETWORK"
+    incus_cmd network create "$INCUS_NETWORK" \
+      --type=bridge \
+      "ipv4.address=$INCUS_NETWORK_IPV4" \
+      ipv4.nat=true \
+      ipv6.address=none \
+      ipv6.nat=false
+  fi
+
+  log "applying $INCUS_ACL to $INCUS_NETWORK"
+  incus_cmd network set "$INCUS_NETWORK" security.acls="$INCUS_ACL"
+  incus_cmd network set "$INCUS_NETWORK" security.acls.default.egress.action=allow
+  incus_cmd network set "$INCUS_NETWORK" security.acls.default.ingress.action=drop
+}
+
+resolve_profile_yaml() {
+  if [[ -f "$INCUS_PROFILE_YAML" ]]; then
+    return
+  fi
+
+  log "downloading Incus profile YAML from $INCUS_PROFILE_URL"
+  INCUS_PROFILE_YAML="$(mktemp)"
+  curl -fsSL "$INCUS_PROFILE_URL" -o "$INCUS_PROFILE_YAML"
+}
+
+ensure_incus_profile() {
+  resolve_profile_yaml
+
+  if ! incus_cmd profile show "$INCUS_PROFILE_NAME" >/dev/null 2>&1; then
+    log "creating Incus profile $INCUS_PROFILE_NAME"
+    incus_cmd profile create "$INCUS_PROFILE_NAME"
+  fi
+
+  log "applying Incus profile source of truth $INCUS_PROFILE_YAML"
+  incus_cmd profile edit "$INCUS_PROFILE_NAME" <"$INCUS_PROFILE_YAML"
+}
+
+ensure_profile_paths() {
+  sudo_cmd install -d -m 755 /srv/incus-web/default-workspace
+}
+
 wait_for_running() {
   local name="$1"
   local state=""
 
   for _ in $(seq 1 90); do
-    state="$(incus_cmd list "$name" --format csv -c s 2>/dev/null || true)"
+    state="$(incus_cmd info "$name" 2>/dev/null | awk -F': ' '$1 == "Status" {print $2; exit}' || true)"
     if [[ "$state" == "RUNNING" ]]; then
       return
     fi
@@ -232,17 +302,52 @@ provision_container() {
   local name="$1"
 
   log "installing container packages"
+  # This script is evaluated inside the container; keep expansions there.
+  # shellcheck disable=SC2016
   container_bash "$name" 'export DEBIAN_FRONTEND=noninteractive
 apt-get update
-apt-get install -y ca-certificates curl gnupg sudo nodejs npm
+apt-get install -y \
+  build-essential \
+  ca-certificates \
+  cargo \
+  curl \
+  git \
+  golang-go \
+  gnupg \
+  jq \
+  libssl-dev \
+  netcat-openbsd \
+  nodejs \
+  npm \
+  pkg-config \
+  python3 \
+  python3-pip \
+  python3-venv \
+  rustc \
+  sudo \
+  unzip \
+  zip
+if ! command -v gh >/dev/null 2>&1; then
+  mkdir -p /etc/apt/keyrings
+  curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+    | tee /etc/apt/keyrings/githubcli-archive-keyring.gpg >/dev/null
+  chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg
+  echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+    >/etc/apt/sources.list.d/github-cli.list
+  apt-get update
+  apt-get install -y gh
+fi
 if ! command -v tailscale >/dev/null 2>&1; then
   curl -fsSL https://tailscale.com/install.sh | sh
+fi
+if ! command -v claude >/dev/null 2>&1; then
+  npm install -g @anthropic-ai/claude-code
 fi
 if ! command -v wetty >/dev/null 2>&1; then
   npm install -g wetty
 fi'
 
-  log "configuring user, workspace, tailscaled, and wetty"
+  log "configuring user, workspace, developer tools, tailscaled, and wetty"
   container_bash "$name" "set -euo pipefail
 if ! id -u '$WEB_USER' >/dev/null 2>&1; then
   useradd -m -s /bin/bash '$WEB_USER'
@@ -251,6 +356,30 @@ install -d -o '$WEB_USER' -g '$WEB_USER' '$CONTAINER_WORKSPACE'
 usermod -aG sudo '$WEB_USER'
 printf '%s ALL=(ALL) NOPASSWD:ALL\n' '$WEB_USER' >/etc/sudoers.d/incus-web-user
 chmod 440 /etc/sudoers.d/incus-web-user
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'set -euo pipefail' \
+  '' \
+  'export HOME=/home/$WEB_USER' \
+  'export USER=$WEB_USER' \
+  'export LOGNAME=$WEB_USER' \
+  'export PATH=\"\$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:\$PATH\"' \
+  '' \
+  'cd $CONTAINER_WORKSPACE 2>/dev/null || cd \"\$HOME\"' \
+  'exec \"\$@\"' \
+  >/usr/local/bin/agent-env
+chmod 755 /usr/local/bin/agent-env
+if ! grep -q '/usr/local/bin' /home/'$WEB_USER'/.bashrc 2>/dev/null; then
+  cat >>/home/'$WEB_USER'/.bashrc <<'EOF'
+
+export PATH=\"\$HOME/.local/bin:/usr/local/bin:\$PATH\"
+cd '$CONTAINER_WORKSPACE' 2>/dev/null || true
+EOF
+fi
+chown '$WEB_USER':'$WEB_USER' /home/'$WEB_USER'/.bashrc
+if ! runuser -u '$WEB_USER' -- bash -lc 'command -v codex >/dev/null 2>&1'; then
+  runuser -u '$WEB_USER' -- bash -lc 'cd \"\$HOME\" && curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh'
+fi
 install -d -m 755 /etc/default
 cat >/etc/default/tailscaled <<'EOF'
 PORT=\"41641\"
@@ -280,6 +409,8 @@ join_tailnet_and_serve() {
   local name="$1"
 
   log "joining tailnet and configuring tailscale serve"
+  # Expand the Tailscale values inside the container after sourcing the pushed env file.
+  # shellcheck disable=SC2016
   container_bash "$name" 'set -euo pipefail
 . /etc/incus-web/tailscale.env
 tailscale up --authkey="$TS_AUTHKEY" --hostname="$TS_HOSTNAME" $TS_EXTRA_ARGS
@@ -288,13 +419,57 @@ rm -f /etc/incus-web/tailscale.env
 tailscale serve status'
 }
 
+validate_container() {
+  local name="$1"
+
+  log "validating toolchain and network boundaries"
+
+  agent_check() {
+    local command="$1"
+    container_bash "$name" "su -l '$WEB_USER' -c '/usr/local/bin/agent-env $command'"
+  }
+
+  expect_blocked_lan() {
+    local host="$1"
+    local port="$2"
+    if agent_check "nc -vz -w 2 $host $port" >/tmp/incus-web-lan-check.log 2>&1; then
+      cat /tmp/incus-web-lan-check.log >&2
+      die "LAN egress unexpectedly succeeded: $host:$port"
+    fi
+  }
+
+  agent_check "node --version"
+  agent_check "npm --version"
+  agent_check "python3 --version"
+  agent_check "go version"
+  agent_check "rustc -V"
+  agent_check "cargo -V"
+  agent_check "git --version"
+  agent_check "gh --version"
+  agent_check "claude --version"
+  agent_check "codex --version"
+  container_bash "$name" "tailscale version >/dev/null"
+  container_bash "$name" "tailscale status >/dev/null"
+  agent_check "nc -vz -w 5 1.1.1.1 443"
+  expect_blocked_lan 10.0.0.1 80
+  expect_blocked_lan 172.16.0.1 80
+  expect_blocked_lan 192.168.0.1 80
+  expect_blocked_lan 169.254.0.1 80
+}
+
 main() {
   load_env
 
   CONTAINER_NAME="${CONTAINER_NAME:-incus-web}"
-  IMAGE="${IMAGE:-images:debian/trixie/cloud}"
-  RECREATE="${RECREATE:-0}"
-  INCUS_NETWORK="${INCUS_NETWORK:-incusbr0}"
+  IMAGE="${IMAGE:-images:debian/trixie}"
+  RECREATE="${FORCE_RECREATE:-${RECREATE:-0}}"
+  INCUS_NETWORK="${INCUS_NETWORK:-agentbr0}"
+  INCUS_NETWORK_IPV4="${INCUS_NETWORK_IPV4:-198.18.0.1/15}"
+  INCUS_ACL="${INCUS_ACL:-agent-block-lan}"
+  ENABLE_NETWORK_ACL="${ENABLE_NETWORK_ACL:-1}"
+  INCUS_PROFILE_NAME="${INCUS_PROFILE_NAME:-incus-web-agent}"
+  INCUS_PROFILE_YAML="${INCUS_PROFILE_YAML:-$SCRIPT_DIR/incus-web-profile.yaml}"
+  INCUS_PROFILE_URL="${INCUS_PROFILE_URL:-https://raw.githubusercontent.com/jmagar/incus-web/main/incus-web-profile.yaml}"
   TS_HOSTNAME="${TS_HOSTNAME:-$CONTAINER_NAME}"
   TS_EXTRA_ARGS="${TS_EXTRA_ARGS:---accept-routes=false}"
   TAILSCALE_SERVE_PORT="${TAILSCALE_SERVE_PORT:-443}"
@@ -308,30 +483,51 @@ main() {
 
   install_incus_if_needed
   ensure_incus_ready
+  ensure_agent_network
+  ensure_profile_paths
+  ensure_incus_profile
 
   if incus_cmd list "$CONTAINER_NAME" --format csv -c n | grep -qx "$CONTAINER_NAME"; then
     if [[ "$RECREATE" == "1" ]]; then
       log "deleting existing container $CONTAINER_NAME"
       incus_cmd delete "$CONTAINER_NAME" --force
     else
-      die "container $CONTAINER_NAME already exists. Set RECREATE=1 to replace it."
+      log "reusing existing container $CONTAINER_NAME"
+      wait_for_running "$CONTAINER_NAME"
+      wait_for_network "$CONTAINER_NAME"
+      provision_container "$CONTAINER_NAME"
+      push_secret_env "$CONTAINER_NAME"
+      join_tailnet_and_serve "$CONTAINER_NAME"
+      validate_container "$CONTAINER_NAME"
+      log "ready"
+      log "container: $CONTAINER_NAME"
+      log "workspace: $HOST_WORKSPACE -> $CONTAINER_WORKSPACE"
+      log "tailnet host: $TS_HOSTNAME"
+      return
     fi
   fi
 
   log "creating host workspace $HOST_WORKSPACE"
   mkdir -p "$HOST_WORKSPACE"
 
-  log "launching $CONTAINER_NAME from $IMAGE"
-  incus_cmd launch "$IMAGE" "$CONTAINER_NAME"
-  wait_for_running "$CONTAINER_NAME"
+  log "creating $CONTAINER_NAME from $IMAGE"
+  incus_cmd init "$IMAGE" "$CONTAINER_NAME" \
+    --profile default \
+    --profile "$INCUS_PROFILE_NAME"
 
-  log "mounting $HOST_WORKSPACE at $CONTAINER_WORKSPACE"
-  incus_cmd config device add "$CONTAINER_NAME" workspace disk source="$HOST_WORKSPACE" path="$CONTAINER_WORKSPACE" shift="$DISK_SHIFT"
+  log "applying runtime device overrides"
+  incus_cmd config device override "$CONTAINER_NAME" eth0 network="$INCUS_NETWORK"
+  incus_cmd config device override "$CONTAINER_NAME" workspace source="$HOST_WORKSPACE" path="$CONTAINER_WORKSPACE" shift="$DISK_SHIFT"
+
+  log "starting $CONTAINER_NAME"
+  incus_cmd start "$CONTAINER_NAME"
+  wait_for_running "$CONTAINER_NAME"
 
   wait_for_network "$CONTAINER_NAME"
   provision_container "$CONTAINER_NAME"
   push_secret_env "$CONTAINER_NAME"
   join_tailnet_and_serve "$CONTAINER_NAME"
+  validate_container "$CONTAINER_NAME"
 
   log "ready"
   log "container: $CONTAINER_NAME"
