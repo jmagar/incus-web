@@ -4,11 +4,15 @@ set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 deploy="$root/deploy.sh"
 profile="$root/incus-web-profile.yaml"
+build_image="$root/scripts/build-image.sh"
+lib="$root/scripts/incus-web-lib.sh"
+smoke_image="$root/scripts/smoke-image.sh"
+workflow="$root/.github/workflows/build-image.yml"
 
 require_literal() {
   local needle="$1"
-  if ! grep -Fq -- "$needle" "$deploy"; then
-    printf 'missing expected deploy.sh content: %s\n' "$needle" >&2
+  if ! grep -Fq -- "$needle" "$deploy" "$lib"; then
+    printf 'missing expected deploy surface content: %s\n' "$needle" >&2
     exit 1
   fi
 }
@@ -60,6 +64,26 @@ require_literal "--profile \"\$INCUS_PROFILE_NAME\""
 require_literal "incus_cmd config device override \"\$CONTAINER_NAME\" eth0 network=\"\$INCUS_NETWORK\""
 require_literal "incus_cmd config device override \"\$CONTAINER_NAME\" workspace source=\"\$HOST_WORKSPACE\" path=\"\$CONTAINER_WORKSPACE\" shift=\"\$DISK_SHIFT\""
 require_literal "incus_cmd start \"\$CONTAINER_NAME\""
+require_literal "if [[ \"\${BASH_SOURCE[0]}\" == \"\$0\" ]]; then"
+require_literal "INCUS_WEB_LIB_URL="
+require_literal "raw.githubusercontent.com/jmagar/incus-web/main/scripts/incus-web-lib.sh"
+require_literal "curl -fsSL \"\$INCUS_WEB_LIB_URL\" -o \"\$INCUS_WEB_LIB_TMP\""
+
+if [[ ! -f "$lib" ]]; then
+  printf 'missing shared provisioning library: %s\n' "$lib" >&2
+  exit 1
+fi
+
+for needle in \
+  "provision_container()" \
+  "ensure_tailscale_installed()" \
+  "validate_container()" \
+  "SCRIPT_DIR="; do
+  if ! grep -Fq -- "$needle" "$lib"; then
+    printf 'missing expected shared library content: %s\n' "$needle" >&2
+    exit 1
+  fi
+done
 
 if [[ ! -f "$profile" ]]; then
   printf 'missing Incus profile source of truth: %s\n' "$profile" >&2
@@ -80,6 +104,86 @@ for needle in \
   "shift: \"true\""; do
   if ! grep -Fq -- "$needle" "$profile"; then
     printf 'missing expected profile content: %s\n' "$needle" >&2
+    exit 1
+  fi
+done
+
+if [[ ! -f "$build_image" ]]; then
+  printf 'missing CI image build script: %s\n' "$build_image" >&2
+  exit 1
+fi
+
+# shellcheck disable=SC2016
+for needle in \
+  '. "$ROOT/scripts/incus-web-lib.sh"' \
+  "BUILD_CONTAINER_NAME" \
+  "BUILD_BASE_IMAGE" \
+  "IMAGE_ALIAS" \
+  "BUILD_GIT_SHA" \
+  "incus-web.commit=\$BUILD_GIT_SHA" \
+  "provision_container \"\$CONTAINER_NAME\"" \
+  "ensure_tailscale_installed \"\$CONTAINER_NAME\"" \
+  "systemctl disable --now tailscaled" \
+  "rm -rf /etc/incus-web /tmp/* /var/tmp/*" \
+  "incus_cmd publish \"\$CONTAINER_NAME/image-ready\"" \
+  "incus_cmd image export \"\$IMAGE_ALIAS\" \"\$EXPORT_DIR/\$EXPORT_NAME\""; do
+  if ! grep -Fq -- "$needle" "$build_image"; then
+    printf 'missing expected build-image.sh content: %s\n' "$needle" >&2
+    exit 1
+  fi
+done
+
+if [[ ! -f "$smoke_image" ]]; then
+  printf 'missing exported image smoke script: %s\n' "$smoke_image" >&2
+  exit 1
+fi
+
+# shellcheck disable=SC2016
+for needle in \
+  '. "$ROOT/scripts/incus-web-lib.sh"' \
+  "incus_cmd image import \"\$image_tar\" --alias \"\$SMOKE_IMAGE_ALIAS\"" \
+  "incus_cmd init \"\$SMOKE_IMAGE_ALIAS\" \"\$SMOKE_CONTAINER_NAME\"" \
+  "node --version" \
+  "python3 --version" \
+  "go version" \
+  "rustc -V" \
+  "claude --version" \
+  "tailscale version" \
+  "codex --version"; do
+  if ! grep -Fq -- "$needle" "$smoke_image"; then
+    printf 'missing expected smoke-image.sh content: %s\n' "$needle" >&2
+    exit 1
+  fi
+done
+
+if [[ ! -f "$workflow" ]]; then
+  printf 'missing CI image workflow: %s\n' "$workflow" >&2
+  exit 1
+fi
+
+for needle in \
+  "name: Build Incus image" \
+  "pull_request:" \
+  "runs-on: ubuntu-latest" \
+  "scripts/build-image.sh" \
+  "scripts/incus-web-lib.sh" \
+  "scripts/smoke-image.sh" \
+  "bash tests/deploy_static_tests.sh" \
+  "sudo incus admin init --minimal" \
+  "sudo -E ./scripts/build-image.sh" \
+  "sudo -E ./scripts/smoke-image.sh" \
+  "contents: write" \
+  "actions/upload-artifact@v4" \
+  "if: github.event_name == 'push' && github.ref == 'refs/heads/main'" \
+  "retention-days: 14" \
+  "Publish rolling latest release" \
+  "RELEASE_TAG: incus-web-agent-latest" \
+  "git tag -f \"\$RELEASE_TAG\" \"\$GITHUB_SHA\"" \
+  "git push -f origin \"\$RELEASE_TAG\"" \
+  "gh release upload \"\$RELEASE_TAG\" dist/* --clobber" \
+  "incus-web-agent-image"; do
+  if ! grep -Fq -- "$needle" "$workflow"; then
+    printf 'missing expected workflow content: %s\n' "$needle" >&2
     exit 1
   fi
 done

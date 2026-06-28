@@ -27,6 +27,37 @@ If Incus is missing, `deploy.sh` attempts to install it with `apt-get` and initi
 
 The Incus container shape lives in `incus-web-profile.yaml`: profile config, the NIC, and the workspace disk device. Provisioning is intentionally handled by `deploy.sh` after the container launches. The demo does not use cloud-init, so packages, users, services, and agent setup stay in one procedural code path instead of drifting between image metadata and this repository.
 
+## CI Image Build
+
+GitHub Actions builds an Incus image on pull requests and pushes to `main` when the deploy script, profile, image scripts, static tests, or workflow change. The workflow runs on GitHub-hosted `ubuntu-latest`, validates the shell code, installs Incus if needed, provisions a temporary container with the shared functions used by live deploys, publishes it as `incus-web-agent`, exports it, imports the exported tarball again, and launches a smoke-test container from that exported artifact.
+
+Pushes to `main` upload the exported Incus image as the short-lived `incus-web-agent-image` workflow artifact with a 14-day retention period, then publish the same exported image to the rolling GitHub Release `incus-web-agent-latest`. Pull requests build and smoke-test the image but do not upload artifacts or update the release. The published Incus image is stamped with the Git commit, repository, run ID, and run URL as Incus image properties.
+
+To build the image locally:
+
+```bash
+./scripts/build-image.sh
+```
+
+Useful overrides:
+
+```bash
+BUILD_CONTAINER_NAME=incus-web-image-build
+BUILD_BASE_IMAGE=images:debian/trixie
+IMAGE_ALIAS=incus-web-agent
+EXPORT_DIR=$PWD/dist
+RECREATE=1
+```
+
+The exported artifact can be imported on another Incus host and used as the deploy base image:
+
+```bash
+incus image import dist/incus-web-agent.tar.xz --alias incus-web-agent
+IMAGE=incus-web-agent ./deploy.sh
+```
+
+For the durable rolling build, download `incus-web-agent.tar.xz` from the `incus-web-agent-latest` GitHub Release instead of relying on the expiring Actions artifact.
+
 ## Quick Start
 
 Create a working directory and a `.env` file:
