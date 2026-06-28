@@ -29,9 +29,11 @@ The Incus container shape lives in `incus-web-profile.yaml`: profile config, the
 
 ## CI Image Build
 
-GitHub Actions builds an Incus image on pull requests and pushes to `main` when the deploy script, profile, image scripts, static tests, or workflow change. The workflow runs on GitHub-hosted `ubuntu-latest`, validates the shell code, installs Incus if needed, provisions a temporary container with the shared functions used by live deploys, publishes it as `incus-web-agent`, exports it, imports the exported tarball again, and launches a smoke-test container from that exported artifact.
+GitHub Actions builds an Incus image on pull requests and pushes to `main` when the deploy script, runtime profile, `distrobuilder.yaml`, image scripts, static tests, or workflow change. The workflow runs on GitHub-hosted `ubuntu-latest`, validates the shell code, builds the Debian Trixie image from `distrobuilder.yaml`, imports the exported tarball, and launches a smoke-test container from that exported artifact.
 
-Pushes to `main` upload the exported Incus image as the short-lived `incus-web-agent-image` workflow artifact with a 14-day retention period, then publish the same exported image to the rolling GitHub Release `incus-web-agent-latest`. Pull requests build and smoke-test the image but do not upload artifacts or update the release. The published Incus image is stamped with the Git commit, repository, run ID, and run URL as Incus image properties.
+Pushes to `main` upload the exported Incus image as the short-lived `incus-web-agent-image` workflow artifact with a 14-day retention period, then publish the same exported image to the rolling GitHub Release `incus-web-agent-latest`. Pull requests build and smoke-test the image but do not upload artifacts or update the release.
+
+The image recipe installs the system toolchains from Debian packages, installs Node/npm from the upstream Node 22 tarball, then installs Claude Code, WeTTY, Tailscale, GitHub CLI, and Codex CLI during the distrobuilder `post-packages` hook.
 
 To build the image locally:
 
@@ -42,11 +44,10 @@ To build the image locally:
 Useful overrides:
 
 ```bash
-BUILD_CONTAINER_NAME=incus-web-image-build
-BUILD_BASE_IMAGE=images:debian/trixie
+DISTROBUILDER_YAML=$PWD/distrobuilder.yaml
 IMAGE_ALIAS=incus-web-agent
 EXPORT_DIR=$PWD/dist
-RECREATE=1
+BUILD_TYPE=unified
 ```
 
 The exported artifact can be imported on another Incus host and used as the deploy base image:

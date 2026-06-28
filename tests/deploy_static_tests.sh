@@ -4,6 +4,7 @@ set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 deploy="$root/deploy.sh"
 profile="$root/incus-web-profile.yaml"
+definition="$root/distrobuilder.yaml"
 build_image="$root/scripts/build-image.sh"
 lib="$root/scripts/incus-web-lib.sh"
 smoke_image="$root/scripts/smoke-image.sh"
@@ -113,20 +114,38 @@ if [[ ! -f "$build_image" ]]; then
   exit 1
 fi
 
+if [[ ! -f "$definition" ]]; then
+  printf 'missing distrobuilder image definition: %s\n' "$definition" >&2
+  exit 1
+fi
+
+for needle in \
+  "downloader: debootstrap" \
+  "release: trixie" \
+  "name: incus-web-agent" \
+  "build-essential" \
+  "golang-go" \
+  "rustc" \
+  "latest-v22.x" \
+  "npm install -g @anthropic-ai/claude-code" \
+  "npm install -g wetty" \
+  "tailscale.com/install.sh" \
+  "chatgpt.com/codex/install.sh" \
+  "systemctl enable wetty.service" \
+  "systemctl enable tailscaled.service"; do
+  if ! grep -Fq -- "$needle" "$definition"; then
+    printf 'missing expected distrobuilder content: %s\n' "$needle" >&2
+    exit 1
+  fi
+done
+
 # shellcheck disable=SC2016
 for needle in \
-  '. "$ROOT/scripts/incus-web-lib.sh"' \
-  "BUILD_CONTAINER_NAME" \
-  "BUILD_BASE_IMAGE" \
+  "DISTROBUILDER_YAML" \
+  "distrobuilder build-incus" \
   "IMAGE_ALIAS" \
-  "BUILD_GIT_SHA" \
-  "incus-web.commit=\$BUILD_GIT_SHA" \
-  "provision_container \"\$CONTAINER_NAME\"" \
-  "ensure_tailscale_installed \"\$CONTAINER_NAME\"" \
-  "systemctl disable --now tailscaled" \
-  "rm -rf /etc/incus-web /tmp/* /var/tmp/*" \
-  "incus_cmd publish \"\$CONTAINER_NAME/image-ready\"" \
-  "incus_cmd image export \"\$IMAGE_ALIAS\" \"\$EXPORT_DIR/\$EXPORT_NAME\""; do
+  "BUILD_TYPE" \
+  "mv \"\$EXPORT_DIR/incus.tar.xz\" \"\$EXPORT_DIR/\$IMAGE_ALIAS.tar.xz\""; do
   if ! grep -Fq -- "$needle" "$build_image"; then
     printf 'missing expected build-image.sh content: %s\n' "$needle" >&2
     exit 1
@@ -165,10 +184,13 @@ for needle in \
   "name: Build Incus image" \
   "pull_request:" \
   "runs-on: ubuntu-latest" \
+  "distrobuilder.yaml" \
   "scripts/build-image.sh" \
   "scripts/incus-web-lib.sh" \
   "scripts/smoke-image.sh" \
   "bash tests/deploy_static_tests.sh" \
+  "shellcheck debootstrap squashfs-tools" \
+  "snap install distrobuilder --classic" \
   "sudo incus admin init --minimal" \
   "sudo -E ./scripts/build-image.sh" \
   "sudo -E ./scripts/smoke-image.sh" \

@@ -8,6 +8,7 @@ on:
     paths:
       - .github/workflows/build-image.yml
       - deploy.sh
+      - distrobuilder.yaml
       - incus-web-profile.yaml
       - scripts/build-image.sh
       - scripts/incus-web-lib.sh
@@ -17,6 +18,7 @@ on:
     paths:
       - .github/workflows/build-image.yml
       - deploy.sh
+      - distrobuilder.yaml
       - incus-web-profile.yaml
       - scripts/build-image.sh
       - scripts/incus-web-lib.sh
@@ -38,7 +40,8 @@ jobs:
       - name: Install validation dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y shellcheck
+          sudo apt-get install -y shellcheck debootstrap squashfs-tools
+          sudo snap install distrobuilder --classic
 
       - name: Validate scripts
         run: |
@@ -59,11 +62,7 @@ jobs:
         env:
           EXPORT_DIR: ${{ github.workspace }}/dist
           IMAGE_ALIAS: incus-web-agent
-          IMAGE_DESCRIPTION: incus-web agent image from ${{ github.sha }}
-          BUILD_GIT_SHA: ${{ github.sha }}
-          BUILD_GITHUB_REPOSITORY: ${{ github.repository }}
-          BUILD_GITHUB_RUN_ID: ${{ github.run_id }}
-          BUILD_GITHUB_SERVER_URL: ${{ github.server_url }}
+          DISTROBUILDER_YAML: ${{ github.workspace }}/distrobuilder.yaml
 
       - name: Smoke test exported image
         run: sudo -E ./scripts/smoke-image.sh

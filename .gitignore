@@ -1,4 +1,6 @@
 .env
 .env.*
 !.env.example
-
+dist/
+*.squashfs
+*.tar.xz

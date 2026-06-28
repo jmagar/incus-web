@@ -50,7 +50,7 @@ incus_cmd config device override "$SMOKE_CONTAINER_NAME" workspace source="$HOST
 incus_cmd start "$SMOKE_CONTAINER_NAME"
 wait_for_running "$SMOKE_CONTAINER_NAME"
 
-log "checking exported image toolchain"
+log "checking distrobuilder image toolchain"
 container_bash "$SMOKE_CONTAINER_NAME" "set -euo pipefail
 node --version
 npm --version
