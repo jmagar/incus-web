@@ -308,7 +308,7 @@ push_oidc_env() {
   local cookie_secret="$OIDC_COOKIE_SECRET"
 
   if [[ -z "$cookie_secret" ]]; then
-    cookie_secret="$(head -c 32 /dev/urandom | base64 | tr -d '\n')"
+    cookie_secret="$(head -c 32 /dev/urandom | base64 | tr -d '\n' | cut -c1-32)"
   fi
 
   tmp_file="$(mktemp)"

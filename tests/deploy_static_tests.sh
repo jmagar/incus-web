@@ -43,6 +43,7 @@ require_literal "OIDC_ISSUER_URL="
 require_literal "OIDC_CLIENT_ID="
 require_literal "OIDC_CLIENT_SECRET="
 require_literal "OIDC_COOKIE_SECRET="
+require_literal "cut -c1-32"
 require_literal "OIDC_HOST_PORT="
 require_literal "OAUTH2_PROXY_VERSION="
 require_literal "nc -vz -w 5 1.1.1.1 443"
@@ -93,7 +94,7 @@ fi
 
 for needle in \
   "name: incus-web-agent" \
-  "security.privileged: \"true\"" \
+  "security.privileged: \"false\"" \
   "security.nesting: \"true\"" \
   "limits.cpu: \"2\"" \
   "limits.memory: 4GiB" \

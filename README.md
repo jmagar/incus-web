@@ -11,10 +11,10 @@ The deploy script is meant to be curlable, but it does not bake secrets into the
 - A small demo developer toolchain: Node/npm, Python, Go, Rust/Cargo, Git, GitHub CLI, Claude Code, and Codex CLI.
 - WeTTY listening inside the container on `127.0.0.1:3000`.
 - One of two access layers:
-  - Tailscale running inside the privileged system container with a `tailscale serve` HTTPS route.
+  - Tailscale running inside the nested, unprivileged system container with a `tailscale serve` HTTPS route.
   - `oauth2-proxy` running inside the container as an OIDC-authenticated reverse proxy in front of WeTTY.
 - A dedicated Incus bridge with an ACL that blocks direct egress to RFC1918 and IPv4 link-local LAN ranges.
-- A committed Incus profile YAML (`incus-web-profile.yaml`) as the source of truth for the container shape, including `security.privileged=true` and `security.nesting=true`.
+- A committed Incus profile YAML (`incus-web-profile.yaml`) as the source of truth for the container shape, including `security.privileged=false` and `security.nesting=true`.
 - A host directory mounted into the container for persistent working files.
 
 ## Requirements
@@ -211,3 +211,4 @@ Configure the OIDC app callback as `https://incus-web.example.com/oauth2/callbac
 - The Tailscale auth key is copied into the container only long enough to run `tailscale up`, then removed.
 - In OIDC mode, `oauth2-proxy` is the only service intended to be exposed; WeTTY stays bound to `127.0.0.1` inside the container.
 - Do not build an Incus image with `/var/lib/tailscale` already populated. Cloned containers should join Tailscale with their own node identity.
+- The default profile is nested but unprivileged. Keep privileged containers out of the hosted multi-tenant path; use a dedicated trusted pool or an Incus VM for workloads that truly require privileged semantics.

@@ -3,10 +3,10 @@ description: "Incus system-container profile for the incus-web coding-agent demo
 config:
   boot.autostart: "false"
 
-  # This demo intentionally uses a privileged system container. Tailscale,
-  # systemd service management, and the browser-agent dev toolchain behave much
-  # more like the article's setup when the container has these capabilities.
-  security.privileged: "true"
+  # Keep the hosted workspace root-safe by default. Nesting remains enabled for
+  # Docker/Incus-style developer workflows, but privileged containers should be
+  # reserved for explicitly trusted single-tenant escape hatches.
+  security.privileged: "false"
   security.nesting: "true"
 
   # Conservative demo limits. Tune through this profile if the demo needs more.
