@@ -375,7 +375,8 @@ apt-get install -y \
   rustc \
   sudo \
   unzip \
-  zip
+  zip \
+  zsh
 if ! command -v gh >/dev/null 2>&1; then
   mkdir -p /etc/apt/keyrings
   curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
@@ -391,13 +392,17 @@ if ! command -v claude >/dev/null 2>&1; then
 fi
 if ! command -v wetty >/dev/null 2>&1; then
   npm install -g wetty
+fi
+if [[ "'"$TERMINAL_BACKEND"'" == "ghostty-web" ]] && ! npm list -g "@ghostty-web/demo@'"$GHOSTTY_WEB_DEMO_VERSION"'" >/dev/null 2>&1; then
+  npm install -g @ghostty-web/demo@'"$GHOSTTY_WEB_DEMO_VERSION"'
 fi'
 
   log "configuring user, workspace, developer tools, tailscaled, and wetty"
   container_bash "$name" "set -euo pipefail
 if ! id -u '$WEB_USER' >/dev/null 2>&1; then
-  useradd -m -s /bin/bash '$WEB_USER'
+  useradd -m -s /usr/bin/zsh '$WEB_USER'
 fi
+usermod -s /usr/bin/zsh '$WEB_USER'
 install -d -o '$WEB_USER' -g '$WEB_USER' '$CONTAINER_WORKSPACE'
 usermod -aG sudo '$WEB_USER'
 printf '%s ALL=(ALL) NOPASSWD:ALL\n' '$WEB_USER' >/etc/sudoers.d/incus-web-user
@@ -423,6 +428,14 @@ cd '$CONTAINER_WORKSPACE' 2>/dev/null || true
 EOF
 fi
 chown '$WEB_USER':'$WEB_USER' /home/'$WEB_USER'/.bashrc
+if ! grep -q '/usr/local/bin' /home/'$WEB_USER'/.zshrc 2>/dev/null; then
+  cat >>/home/'$WEB_USER'/.zshrc <<'EOF'
+
+export PATH=\"\$HOME/.local/bin:/usr/local/bin:\$PATH\"
+cd '$CONTAINER_WORKSPACE' 2>/dev/null || true
+EOF
+fi
+chown '$WEB_USER':'$WEB_USER' /home/'$WEB_USER'/.zshrc
 if ! runuser -u '$WEB_USER' -- bash -lc 'command -v codex >/dev/null 2>&1'; then
   runuser -u '$WEB_USER' -- bash -lc 'cd \"\$HOME\" && curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh'
 fi
@@ -439,7 +452,7 @@ Wants=network-online.target
 
 [Service]
 Environment=HOME=/home/$WEB_USER
-ExecStart=/usr/local/bin/wetty --host 127.0.0.1 --port $WETTY_PORT --base / --command 'runuser -u $WEB_USER -- /bin/bash -l'
+ExecStart=/usr/local/bin/wetty --host 127.0.0.1 --port $WETTY_PORT --base / --command 'runuser -u $WEB_USER -- /usr/bin/zsh -l'
 Restart=always
 RestartSec=2
 
@@ -447,7 +460,73 @@ RestartSec=2
 WantedBy=multi-user.target
 EOF
 systemctl daemon-reload
-systemctl enable --now wetty"
+if [[ '$TERMINAL_BACKEND' == 'ghostty-web' ]]; then
+  cat >/etc/systemd/system/ghostty-web.service <<EOF
+[Unit]
+Description=Ghostty web terminal
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=$WEB_USER
+WorkingDirectory=$CONTAINER_WORKSPACE
+Environment=HOME=/home/$WEB_USER
+Environment=SHELL=/usr/bin/zsh
+Environment=HOST=127.0.0.1
+Environment=PORT=$WETTY_PORT
+ExecStart=/usr/local/bin/ghostty-web-demo
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  systemctl disable --now wetty >/dev/null 2>&1 || true
+  systemctl stop wetty >/dev/null 2>&1 || true
+  systemctl reset-failed wetty >/dev/null 2>&1 || true
+  systemctl mask --force wetty >/dev/null 2>&1 || true
+  systemctl daemon-reload
+  systemctl enable ghostty-web
+  systemctl restart ghostty-web
+else
+  systemctl unmask wetty >/dev/null 2>&1 || true
+  systemctl disable --now ghostty-web >/dev/null 2>&1 || true
+  systemctl enable wetty
+  systemctl restart wetty
+fi"
+
+  configure_user_bootstrap "$name"
+}
+
+configure_user_bootstrap() {
+  local name="$1"
+
+  if [[ -z "$DOTFILES_REPO" && "$DOTFILES_RUN_MISE" != "1" ]]; then
+    return
+  fi
+
+  log "configuring optional dotfiles and mise bootstrap"
+  if [[ -n "$DOTFILES_AGE_KEY_FILE" ]]; then
+    [[ -f "$DOTFILES_AGE_KEY_FILE" ]] || die "DOTFILES_AGE_KEY_FILE does not exist: $DOTFILES_AGE_KEY_FILE"
+    incus_cmd exec "$name" -- install -d -o "$WEB_USER" -g "$WEB_USER" -m 700 "/home/$WEB_USER/.config/chezmoi"
+    incus_cmd file push "$DOTFILES_AGE_KEY_FILE" "$name/home/$WEB_USER/.config/chezmoi/key.txt"
+    incus_cmd exec "$name" -- chown "$WEB_USER:$WEB_USER" "/home/$WEB_USER/.config/chezmoi/key.txt"
+    incus_cmd exec "$name" -- chmod 600 "/home/$WEB_USER/.config/chezmoi/key.txt"
+  fi
+
+  container_bash "$name" "set -euo pipefail
+if [[ '$DOTFILES_RUN_MISE' == '1' ]] && ! runuser -u '$WEB_USER' -- bash -lc 'command -v mise >/dev/null 2>&1'; then
+  runuser -u '$WEB_USER' -- bash -lc 'curl -fsSL https://mise.run | sh'
+fi
+if [[ -n '$DOTFILES_REPO' ]] && ! runuser -u '$WEB_USER' -- bash -lc 'command -v chezmoi >/dev/null 2>&1'; then
+  runuser -u '$WEB_USER' -- bash -lc 'sh -c \"\$(curl -fsLS get.chezmoi.io)\" -- -b \"\$HOME/.local/bin\"'
+fi
+if [[ -n '$DOTFILES_REPO' ]]; then
+  runuser -u '$WEB_USER' -- bash -lc 'chezmoi init --apply \"$DOTFILES_REPO\"'
+fi
+if [[ '$DOTFILES_RUN_MISE' == '1' ]]; then
+  runuser -u '$WEB_USER' -- bash -lc 'mise install'
+fi"
 }
 
 ensure_tailscale_installed() {
@@ -493,6 +572,11 @@ install -m 755 \"\$tmp_dir/oauth2-proxy-\$version.linux-\$arch/oauth2-proxy\" /u
 
 configure_oidc_proxy() {
   local name="$1"
+  local terminal_service="wetty.service"
+
+  if [[ "$TERMINAL_BACKEND" == "ghostty-web" ]]; then
+    terminal_service="ghostty-web.service"
+  fi
 
   ensure_oauth2_proxy_installed "$name"
   push_oidc_env "$name"
@@ -543,8 +627,8 @@ chmod 755 /usr/local/bin/incus-web-oauth2-proxy-start
 cat >/etc/systemd/system/oauth2-proxy.service <<'"'"'EOF'"'"'
 [Unit]
 Description=OAuth2 Proxy for incus-web
-After=network-online.target wetty.service
-Wants=network-online.target wetty.service
+After=network-online.target '"$terminal_service"'
+Wants=network-online.target '"$terminal_service"'
 
 [Service]
 ExecStart=/usr/local/bin/incus-web-oauth2-proxy-start
@@ -633,6 +717,7 @@ validate_container() {
   agent_check "cargo -V"
   agent_check "git --version"
   agent_check "gh --version"
+  agent_check "zsh --version"
   agent_check "claude --version"
   agent_check "codex --version"
   case "$ACCESS_MODE" in
@@ -644,6 +729,17 @@ validate_container() {
       container_bash "$name" "oauth2-proxy --version >/dev/null"
       container_bash "$name" "systemctl is-active --quiet oauth2-proxy"
       container_bash "$name" "curl -fsSI 'http://127.0.0.1:$OIDC_PROXY_PORT/oauth2/sign_in' >/dev/null"
+      ;;
+  esac
+  case "$TERMINAL_BACKEND" in
+    wetty)
+      container_bash "$name" "systemctl is-active --quiet wetty"
+      container_bash "$name" "curl -fsSI 'http://127.0.0.1:$WETTY_PORT/' >/dev/null"
+      ;;
+    ghostty-web)
+      container_bash "$name" "! systemctl is-active --quiet wetty"
+      container_bash "$name" "systemctl is-active --quiet ghostty-web"
+      container_bash "$name" "curl -fsS 'http://127.0.0.1:$WETTY_PORT/api/token' | jq -e '.token | type == \"string\" and length > 0' >/dev/null"
       ;;
   esac
   agent_check "nc -vz -w 5 1.1.1.1 443"

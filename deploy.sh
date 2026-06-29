@@ -49,8 +49,13 @@ main() {
   OIDC_COOKIE_REFRESH="${OIDC_COOKIE_REFRESH:-1h}"
   OIDC_COOKIE_EXPIRE="${OIDC_COOKIE_EXPIRE:-8h}"
   OAUTH2_PROXY_VERSION="${OAUTH2_PROXY_VERSION:-v7.15.3}"
+  TERMINAL_BACKEND="${TERMINAL_BACKEND:-wetty}"
+  GHOSTTY_WEB_DEMO_VERSION="${GHOSTTY_WEB_DEMO_VERSION:-0.4.0-next.20.g1858a59}"
   WETTY_PORT="${WETTY_PORT:-3000}"
   WEB_USER="${WEB_USER:-agent}"
+  DOTFILES_REPO="${DOTFILES_REPO:-}"
+  DOTFILES_AGE_KEY_FILE="${DOTFILES_AGE_KEY_FILE:-}"
+  DOTFILES_RUN_MISE="${DOTFILES_RUN_MISE:-0}"
   HOST_WORKSPACE="${HOST_WORKSPACE:-$HOME/incus-web-data/$CONTAINER_NAME}"
   CONTAINER_WORKSPACE="${CONTAINER_WORKSPACE:-/workspace}"
   DISK_SHIFT="${DISK_SHIFT:-true}"
@@ -67,6 +72,14 @@ main() {
       ;;
     *)
       die "ACCESS_MODE must be tailscale or oidc"
+      ;;
+  esac
+
+  case "$TERMINAL_BACKEND" in
+    wetty|ghostty-web)
+      ;;
+    *)
+      die "TERMINAL_BACKEND must be wetty or ghostty-web"
       ;;
   esac
 

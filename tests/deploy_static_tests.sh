@@ -29,6 +29,7 @@ require_literal "rustc -V"
 require_literal "cargo -V"
 require_literal "git --version"
 require_literal "gh --version"
+require_literal "zsh --version"
 require_literal "claude --version"
 require_literal "codex --version"
 require_literal "tailscale version"
@@ -46,6 +47,10 @@ require_literal "OIDC_COOKIE_SECRET="
 require_literal "cut -c1-32"
 require_literal "OIDC_HOST_PORT="
 require_literal "OAUTH2_PROXY_VERSION="
+require_literal "TERMINAL_BACKEND="
+require_literal "GHOSTTY_WEB_DEMO_VERSION="
+require_literal "DOTFILES_REPO="
+require_literal "DOTFILES_RUN_MISE="
 require_literal "nc -vz -w 5 1.1.1.1 443"
 require_literal "expect_blocked_lan 10.0.0.1 80"
 require_literal "expect_blocked_lan 172.16.0.1 80"
@@ -125,11 +130,14 @@ for needle in \
   "release: trixie" \
   "name: incus-web-agent" \
   "build-essential" \
+  "zsh" \
   "golang-go" \
   "rustc" \
   "latest-v22.x" \
   "npm install -g @anthropic-ai/claude-code" \
   "npm install -g wetty" \
+  "@ghostty-web/demo@0.4.0-next.20.g1858a59" \
+  "ghostty-web-demo" \
   "tailscale.com/install.sh" \
   "chatgpt.com/codex/install.sh" \
   "systemctl enable wetty.service" \
