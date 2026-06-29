@@ -121,11 +121,17 @@ OIDC_COOKIE_EXPIRE=8h
 OAUTH2_PROXY_VERSION=v7.15.3
 TERMINAL_BACKEND=wetty
 GHOSTTY_WEB_DEMO_VERSION=0.4.0-next.20.g1858a59
+SETUP_ENABLED=1
+SETUP_PORT=3080
+IDENTITY_PROXY_PORT=3090
 WETTY_PORT=3000
 WEB_USER=agent
+INCUS_WEB_WORKSPACE_LABEL=
 DOTFILES_REPO=
+DOTFILES_SOURCE_DIR=
 DOTFILES_AGE_KEY_FILE=
 DOTFILES_RUN_MISE=0
+DOTFILES_SKIP_APT=1
 HOST_WORKSPACE=$HOME/incus-web-data/incus-web
 CONTAINER_WORKSPACE=/workspace
 DISK_SHIFT=true
@@ -166,11 +172,17 @@ Important variables:
 - `OAUTH2_PROXY_VERSION`: oauth2-proxy release to install.
 - `TERMINAL_BACKEND`: `wetty` or `ghostty-web`. Ghostty-web is experimental and still runs behind the same access layer.
 - `GHOSTTY_WEB_DEMO_VERSION`: `@ghostty-web/demo` package version used by the experimental backend. The default pins the `next` build that includes same-origin WebSocket token checks.
+- `SETUP_ENABLED`: set to `1` to expose the authenticated `/setup/` page for per-user dotfiles repo entry and age key upload. This applies inside that user's workspace container; it is not baked into the shared image.
+- `SETUP_PORT`: local setup service port inside the container.
+- `IDENTITY_PROXY_PORT`: local identity-aware proxy port between oauth2-proxy and the terminal backend.
 - `WETTY_PORT`: local WeTTY HTTP port inside the container.
 - `WEB_USER`: non-root terminal user created inside the container.
-- `DOTFILES_REPO`: optional chezmoi source, passed to `chezmoi init --apply` as the terminal user.
+- `INCUS_WEB_WORKSPACE_LABEL`: optional label shown in the terminal workspace banner, such as a user email or display name.
+- `DOTFILES_REPO`: optional per-container chezmoi source, passed to `chezmoi init --apply` as the terminal user.
+- `DOTFILES_SOURCE_DIR`: optional host path to an existing chezmoi source directory for this container. When set, deploy copies it into the container and applies it without requiring GitHub credentials in the container.
 - `DOTFILES_AGE_KEY_FILE`: optional host path copied to `~/.config/chezmoi/key.txt` for encrypted chezmoi secrets.
 - `DOTFILES_RUN_MISE`: set to `1` to install mise for the terminal user and run `mise install` after dotfiles apply.
+- `DOTFILES_SKIP_APT`: set to `1` to skip apt/system-package scripts from imported dotfiles. User-level dotfiles and mise still apply; root-level package scripts require an explicit opt-in.
 - `HOST_WORKSPACE`: host path mounted into the container.
 - `CONTAINER_WORKSPACE`: mount point inside the container.
 - `DISK_SHIFT`: use Incus idmapped shifting for the mounted workspace.

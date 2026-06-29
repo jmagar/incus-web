@@ -328,6 +328,9 @@ push_oidc_env() {
     printf 'OIDC_COOKIE_REFRESH=%q\n' "$OIDC_COOKIE_REFRESH"
     printf 'OIDC_COOKIE_EXPIRE=%q\n' "$OIDC_COOKIE_EXPIRE"
     printf 'WETTY_PORT=%q\n' "$WETTY_PORT"
+    printf 'SETUP_PORT=%q\n' "$SETUP_PORT"
+    printf 'SETUP_ENABLED=%q\n' "$SETUP_ENABLED"
+    printf 'IDENTITY_PROXY_PORT=%q\n' "$IDENTITY_PROXY_PORT"
   } >"$tmp_file"
 
   incus_cmd exec "$name" -- install -d -m 700 /etc/incus-web
@@ -347,8 +350,91 @@ push_oidc_env() {
   fi
 }
 
+push_bootstrap_server() {
+  local name="$1"
+  local source_file="$INCUS_WEB_BOOTSTRAP_SERVER"
+  local tmp_file=""
+
+  if [[ "$SETUP_ENABLED" != "1" ]]; then
+    return
+  fi
+
+  if [[ ! -f "$source_file" ]]; then
+    tmp_file="$(mktemp)"
+    curl -fsSL "$INCUS_WEB_BOOTSTRAP_SERVER_URL" -o "$tmp_file"
+    source_file="$tmp_file"
+  fi
+
+  incus_cmd file push "$source_file" "$name/usr/local/bin/incus-web-bootstrap-server"
+  incus_cmd exec "$name" -- chmod 755 /usr/local/bin/incus-web-bootstrap-server
+  [[ -z "$tmp_file" ]] || rm -f "$tmp_file"
+}
+
+push_identity_proxy() {
+  local name="$1"
+  local source_file="$INCUS_WEB_IDENTITY_PROXY"
+  local tmp_file=""
+
+  if [[ "$ACCESS_MODE" != "oidc" ]]; then
+    return
+  fi
+
+  if [[ ! -f "$source_file" ]]; then
+    tmp_file="$(mktemp)"
+    curl -fsSL "$INCUS_WEB_IDENTITY_PROXY_URL" -o "$tmp_file"
+    source_file="$tmp_file"
+  fi
+
+  incus_cmd file push "$source_file" "$name/usr/local/bin/incus-web-identity-proxy"
+  incus_cmd exec "$name" -- chmod 755 /usr/local/bin/incus-web-identity-proxy
+  [[ -z "$tmp_file" ]] || rm -f "$tmp_file"
+}
+
+push_info_script() {
+  local name="$1"
+  local source_file="$INCUS_WEB_INFO_SCRIPT"
+  local tmp_file=""
+
+  if [[ ! -f "$source_file" ]]; then
+    tmp_file="$(mktemp)"
+    curl -fsSL "$INCUS_WEB_INFO_SCRIPT_URL" -o "$tmp_file"
+    source_file="$tmp_file"
+  fi
+
+  incus_cmd file push "$source_file" "$name/usr/local/bin/incus-web-info"
+  incus_cmd exec "$name" -- chmod 755 /usr/local/bin/incus-web-info
+  [[ -z "$tmp_file" ]] || rm -f "$tmp_file"
+}
+
+push_open_script() {
+  local name="$1"
+  local source_file="$INCUS_WEB_OPEN_SCRIPT"
+  local tmp_file=""
+
+  if [[ ! -f "$source_file" ]]; then
+    tmp_file="$(mktemp)"
+    curl -fsSL "$INCUS_WEB_OPEN_SCRIPT_URL" -o "$tmp_file"
+    source_file="$tmp_file"
+  fi
+
+  incus_cmd file push "$source_file" "$name/usr/local/bin/incus-web-open"
+  incus_cmd exec "$name" -- chmod 755 /usr/local/bin/incus-web-open
+  [[ -z "$tmp_file" ]] || rm -f "$tmp_file"
+}
+
 provision_container() {
   local name="$1"
+  local ghostty_allowed_hosts="localhost,127.0.0.1,::1"
+  local public_host=""
+
+  if [[ -n "${PUBLIC_URL:-}" ]]; then
+    public_host="${PUBLIC_URL#*://}"
+    public_host="${public_host%%/*}"
+    public_host="${public_host%%:*}"
+    if [[ -n "$public_host" ]]; then
+      ghostty_allowed_hosts="$ghostty_allowed_hosts,$public_host"
+    fi
+  fi
 
   log "installing container packages"
   # This script is evaluated inside the container; keep expansions there.
@@ -368,6 +454,7 @@ apt-get install -y \
   netcat-openbsd \
   nodejs \
   npm \
+  pipx \
   pkg-config \
   python3 \
   python3-pip \
@@ -398,6 +485,10 @@ if [[ "'"$TERMINAL_BACKEND"'" == "ghostty-web" ]] && ! npm list -g "@ghostty-web
 fi'
 
   log "configuring user, workspace, developer tools, tailscaled, and wetty"
+  push_bootstrap_server "$name"
+  push_identity_proxy "$name"
+  push_info_script "$name"
+  push_open_script "$name"
   container_bash "$name" "set -euo pipefail
 if ! id -u '$WEB_USER' >/dev/null 2>&1; then
   useradd -m -s /usr/bin/zsh '$WEB_USER'
@@ -407,6 +498,35 @@ install -d -o '$WEB_USER' -g '$WEB_USER' '$CONTAINER_WORKSPACE'
 usermod -aG sudo '$WEB_USER'
 printf '%s ALL=(ALL) NOPASSWD:ALL\n' '$WEB_USER' >/etc/sudoers.d/incus-web-user
 chmod 440 /etc/sudoers.d/incus-web-user
+install -d -o '$WEB_USER' -g '$WEB_USER' /home/'$WEB_USER'/.local/bin /home/'$WEB_USER'/.cargo
+if [[ ! -e /home/'$WEB_USER'/.local/bin/env ]]; then
+  cat >/home/'$WEB_USER'/.local/bin/env <<'EOF'
+if (return 0 2>/dev/null); then
+  return 0
+fi
+exec /usr/bin/env "$@"
+EOF
+  chown '$WEB_USER':'$WEB_USER' /home/'$WEB_USER'/.local/bin/env
+  chmod 755 /home/'$WEB_USER'/.local/bin/env
+fi
+if [[ ! -e /home/'$WEB_USER'/.cargo/env ]]; then
+  cat >/home/'$WEB_USER'/.cargo/env <<'EOF'
+if (return 0 2>/dev/null); then
+  return 0
+fi
+exit 0
+EOF
+  chown '$WEB_USER':'$WEB_USER' /home/'$WEB_USER'/.cargo/env
+  chmod 644 /home/'$WEB_USER'/.cargo/env
+fi
+chmod 755 /usr/local/bin/incus-web-open
+ln -sf /usr/local/bin/incus-web-open /usr/local/bin/xdg-open
+ln -sf /usr/local/bin/incus-web-open /usr/local/bin/sensible-browser
+ln -sf /usr/local/bin/incus-web-open /usr/local/bin/www-browser
+cat >/etc/profile.d/incus-web-browser.sh <<EOF
+export BROWSER=/usr/local/bin/incus-web-open
+export INCUS_WEB_WORKSPACE_LABEL='$INCUS_WEB_WORKSPACE_LABEL'
+EOF
 printf '%s\n' \
   '#!/usr/bin/env bash' \
   'set -euo pipefail' \
@@ -414,7 +534,9 @@ printf '%s\n' \
   'export HOME=/home/$WEB_USER' \
   'export USER=$WEB_USER' \
   'export LOGNAME=$WEB_USER' \
-  'export PATH=\"\$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:\$PATH\"' \
+  'export BROWSER=/usr/local/bin/incus-web-open' \
+  'export INCUS_WEB_WORKSPACE_LABEL=\"${INCUS_WEB_WORKSPACE_LABEL:-}\"' \
+  'export PATH=\"/usr/local/bin:/usr/bin:/bin:\$HOME/.local/bin:\$PATH\"' \
   '' \
   'cd $CONTAINER_WORKSPACE 2>/dev/null || cd \"\$HOME\"' \
   'exec \"\$@\"' \
@@ -424,7 +546,17 @@ if ! grep -q '/usr/local/bin' /home/'$WEB_USER'/.bashrc 2>/dev/null; then
   cat >>/home/'$WEB_USER'/.bashrc <<'EOF'
 
 export PATH=\"\$HOME/.local/bin:/usr/local/bin:\$PATH\"
+export BROWSER=/usr/local/bin/incus-web-open
 cd '$CONTAINER_WORKSPACE' 2>/dev/null || true
+EOF
+fi
+if ! grep -q 'incus-web-info' /home/'$WEB_USER'/.bashrc 2>/dev/null; then
+  cat >>/home/'$WEB_USER'/.bashrc <<'EOF'
+
+if [ -t 1 ]; then
+  export INCUS_WEB_INFO_SHOWN=1
+  /usr/local/bin/incus-web-info 2>/dev/null || true
+fi
 EOF
 fi
 chown '$WEB_USER':'$WEB_USER' /home/'$WEB_USER'/.bashrc
@@ -432,10 +564,54 @@ if ! grep -q '/usr/local/bin' /home/'$WEB_USER'/.zshrc 2>/dev/null; then
   cat >>/home/'$WEB_USER'/.zshrc <<'EOF'
 
 export PATH=\"\$HOME/.local/bin:/usr/local/bin:\$PATH\"
+export BROWSER=/usr/local/bin/incus-web-open
 cd '$CONTAINER_WORKSPACE' 2>/dev/null || true
 EOF
 fi
+if ! grep -q 'incus-web-info' /home/'$WEB_USER'/.zshrc 2>/dev/null; then
+  cat >>/home/'$WEB_USER'/.zshrc <<'EOF'
+
+if [[ -o interactive ]]; then
+  export INCUS_WEB_INFO_SHOWN=1
+  /usr/local/bin/incus-web-info 2>/dev/null || true
+fi
+EOF
+fi
 chown '$WEB_USER':'$WEB_USER' /home/'$WEB_USER'/.zshrc
+incus_web_zlogin_line=\"\$(grep -n '/usr/local/bin/incus-web-info' /etc/zsh/zlogin 2>/dev/null | head -n 1 | cut -d: -f1 || true)\"
+if [[ -n \"\$incus_web_zlogin_line\" ]]; then
+  keep_lines=\$((incus_web_zlogin_line - 3))
+  tmp_zlogin=\"\$(mktemp)\"
+  head -n \"\$keep_lines\" /etc/zsh/zlogin >\"\$tmp_zlogin\"
+  cat \"\$tmp_zlogin\" >/etc/zsh/zlogin
+  rm -f \"\$tmp_zlogin\"
+fi
+incus_web_info_line=\"\$(grep -n '^incus_web_info_precmd()' /etc/zsh/zshrc 2>/dev/null | head -n 1 | cut -d: -f1 || true)\"
+if [[ -n \"\$incus_web_info_line\" ]]; then
+  keep_lines=\$((incus_web_info_line - 3))
+  tmp_zshrc=\"\$(mktemp)\"
+  head -n \"\$keep_lines\" /etc/zsh/zshrc >\"\$tmp_zshrc\"
+  cat \"\$tmp_zshrc\" >/etc/zsh/zshrc
+  rm -f \"\$tmp_zshrc\"
+fi
+if ! grep -q 'incus_web_info_precmd' /etc/zsh/zshrc 2>/dev/null; then
+  cat >>/etc/zsh/zshrc <<'EOF'
+
+export BROWSER=/usr/local/bin/incus-web-open
+autoload -Uz add-zsh-hook 2>/dev/null || true
+incus_web_info_precmd() {
+  if [[ "\${INCUS_WEB_INFO_SHOWN:-0}" != "1" && -t 1 ]]; then
+    /usr/local/bin/incus-web-info 2>/dev/null || true
+    export INCUS_WEB_INFO_SHOWN=1
+  fi
+}
+if (( $+functions[add-zsh-hook] )); then
+  add-zsh-hook precmd incus_web_info_precmd
+else
+  incus_web_info_precmd
+fi
+EOF
+fi
 if ! runuser -u '$WEB_USER' -- bash -lc 'command -v codex >/dev/null 2>&1'; then
   runuser -u '$WEB_USER' -- bash -lc 'cd \"\$HOME\" && curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh'
 fi
@@ -452,6 +628,8 @@ Wants=network-online.target
 
 [Service]
 Environment=HOME=/home/$WEB_USER
+Environment=BROWSER=/usr/local/bin/incus-web-open
+Environment="INCUS_WEB_WORKSPACE_LABEL=$INCUS_WEB_WORKSPACE_LABEL"
 ExecStart=/usr/local/bin/wetty --host 127.0.0.1 --port $WETTY_PORT --base / --command 'runuser -u $WEB_USER -- /usr/bin/zsh -l'
 Restart=always
 RestartSec=2
@@ -460,6 +638,30 @@ RestartSec=2
 WantedBy=multi-user.target
 EOF
 systemctl daemon-reload
+if [[ '$SETUP_ENABLED' == '1' ]]; then
+  cat >/etc/systemd/system/incus-web-setup.service <<EOF
+[Unit]
+Description=incus-web dotfiles setup
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Environment=HOST=127.0.0.1
+Environment=PORT=$SETUP_PORT
+Environment=WEB_USER=$WEB_USER
+Environment=DOTFILES_SKIP_APT=$DOTFILES_SKIP_APT
+ExecStart=/usr/local/bin/incus-web-bootstrap-server
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  systemctl enable incus-web-setup
+  systemctl restart incus-web-setup
+else
+  systemctl disable --now incus-web-setup >/dev/null 2>&1 || true
+fi
 if [[ '$TERMINAL_BACKEND' == 'ghostty-web' ]]; then
   cat >/etc/systemd/system/ghostty-web.service <<EOF
 [Unit]
@@ -472,8 +674,11 @@ User=$WEB_USER
 WorkingDirectory=$CONTAINER_WORKSPACE
 Environment=HOME=/home/$WEB_USER
 Environment=SHELL=/usr/bin/zsh
+Environment=BROWSER=/usr/local/bin/incus-web-open
+Environment="INCUS_WEB_WORKSPACE_LABEL=$INCUS_WEB_WORKSPACE_LABEL"
 Environment=HOST=127.0.0.1
 Environment=PORT=$WETTY_PORT
+Environment=GHOSTTY_ALLOWED_HOSTS=$ghostty_allowed_hosts
 ExecStart=/usr/local/bin/ghostty-web-demo
 Restart=always
 RestartSec=2
@@ -500,12 +705,28 @@ fi"
 
 configure_user_bootstrap() {
   local name="$1"
+  local dotfiles_archive=""
 
-  if [[ -z "$DOTFILES_REPO" && "$DOTFILES_RUN_MISE" != "1" ]]; then
+  if [[ -z "$DOTFILES_REPO" && -z "$DOTFILES_SOURCE_DIR" && "$DOTFILES_RUN_MISE" != "1" ]]; then
     return
   fi
 
   log "configuring optional dotfiles and mise bootstrap"
+  if [[ -n "$DOTFILES_SOURCE_DIR" ]]; then
+    [[ -d "$DOTFILES_SOURCE_DIR" ]] || die "DOTFILES_SOURCE_DIR does not exist: $DOTFILES_SOURCE_DIR"
+    dotfiles_archive="$(mktemp)"
+    tar -C "$DOTFILES_SOURCE_DIR" -czf "$dotfiles_archive" .
+    incus_cmd exec "$name" -- install -d -o "$WEB_USER" -g "$WEB_USER" -m 700 "/home/$WEB_USER/.local/share/chezmoi"
+    incus_cmd file push "$dotfiles_archive" "$name/tmp/incus-web-dotfiles-source.tgz"
+    rm -f "$dotfiles_archive"
+    incus_cmd exec "$name" -- tar -xzf /tmp/incus-web-dotfiles-source.tgz -C "/home/$WEB_USER/.local/share/chezmoi"
+    incus_cmd exec "$name" -- rm -f /tmp/incus-web-dotfiles-source.tgz
+    incus_cmd exec "$name" -- chown -R "$WEB_USER:$WEB_USER" "/home/$WEB_USER/.local/share/chezmoi"
+    if [[ "$DOTFILES_SKIP_APT" == "1" ]]; then
+      incus_cmd exec "$name" -- bash -lc "install -d -o '$WEB_USER' -g '$WEB_USER' '/home/$WEB_USER/.local/share/chezmoi/.disabled-chezmoiscripts'; find '/home/$WEB_USER/.local/share/chezmoi/.chezmoiscripts' -maxdepth 1 -type f -name '*apt-packages*' -exec mv -t '/home/$WEB_USER/.local/share/chezmoi/.disabled-chezmoiscripts' {} + 2>/dev/null || true"
+    fi
+  fi
+
   if [[ -n "$DOTFILES_AGE_KEY_FILE" ]]; then
     [[ -f "$DOTFILES_AGE_KEY_FILE" ]] || die "DOTFILES_AGE_KEY_FILE does not exist: $DOTFILES_AGE_KEY_FILE"
     incus_cmd exec "$name" -- install -d -o "$WEB_USER" -g "$WEB_USER" -m 700 "/home/$WEB_USER/.config/chezmoi"
@@ -514,18 +735,25 @@ configure_user_bootstrap() {
     incus_cmd exec "$name" -- chmod 600 "/home/$WEB_USER/.config/chezmoi/key.txt"
   fi
 
+  incus_cmd exec "$name" -- chown -R "$WEB_USER:$WEB_USER" "/home/$WEB_USER/.config" "/home/$WEB_USER/.local" "$CONTAINER_WORKSPACE"
+
   container_bash "$name" "set -euo pipefail
 if [[ '$DOTFILES_RUN_MISE' == '1' ]] && ! runuser -u '$WEB_USER' -- bash -lc 'command -v mise >/dev/null 2>&1'; then
-  runuser -u '$WEB_USER' -- bash -lc 'curl -fsSL https://mise.run | sh'
+  runuser -u '$WEB_USER' -- env HOME='/home/$WEB_USER' USER='$WEB_USER' LOGNAME='$WEB_USER' MISE_HTTP_TIMEOUT=180 MISE_FETCH_REMOTE_VERSIONS_TIMEOUT=60 bash -lc 'cd \"\$HOME\" && curl -fsSL https://mise.run | sh'
 fi
-if [[ -n '$DOTFILES_REPO' ]] && ! runuser -u '$WEB_USER' -- bash -lc 'command -v chezmoi >/dev/null 2>&1'; then
-  runuser -u '$WEB_USER' -- bash -lc 'sh -c \"\$(curl -fsLS get.chezmoi.io)\" -- -b \"\$HOME/.local/bin\"'
+if [[ -n '$DOTFILES_REPO' || -n '$DOTFILES_SOURCE_DIR' ]] && ! runuser -u '$WEB_USER' -- bash -lc 'command -v chezmoi >/dev/null 2>&1'; then
+  runuser -u '$WEB_USER' -- env HOME='/home/$WEB_USER' USER='$WEB_USER' LOGNAME='$WEB_USER' MISE_HTTP_TIMEOUT=180 MISE_FETCH_REMOTE_VERSIONS_TIMEOUT=60 bash -lc 'cd \"\$HOME\" && sh -c \"\$(curl -fsLS get.chezmoi.io)\" -- -b \"\$HOME/.local/bin\"'
 fi
-if [[ -n '$DOTFILES_REPO' ]]; then
-  runuser -u '$WEB_USER' -- bash -lc 'chezmoi init --apply \"$DOTFILES_REPO\"'
+if [[ -n '$DOTFILES_SOURCE_DIR' ]]; then
+  runuser -u '$WEB_USER' -- env HOME='/home/$WEB_USER' USER='$WEB_USER' LOGNAME='$WEB_USER' MISE_HTTP_TIMEOUT=180 MISE_FETCH_REMOTE_VERSIONS_TIMEOUT=60 bash -lc 'cd \"\$HOME\" && chezmoi --source \"\$HOME/.local/share/chezmoi\" init --apply --promptDefaults --force --no-tty'
+elif [[ -n '$DOTFILES_REPO' ]]; then
+  runuser -u '$WEB_USER' -- env HOME='/home/$WEB_USER' USER='$WEB_USER' LOGNAME='$WEB_USER' MISE_HTTP_TIMEOUT=180 MISE_FETCH_REMOTE_VERSIONS_TIMEOUT=60 DOTFILES_SKIP_APT='$DOTFILES_SKIP_APT' bash -lc 'cd \"\$HOME\" && chezmoi init --promptDefaults --force --no-tty \"$DOTFILES_REPO\" && if [[ \"\$DOTFILES_SKIP_APT\" == \"1\" ]]; then mkdir -p \"\$HOME/.local/share/chezmoi/.disabled-chezmoiscripts\" && find \"\$HOME/.local/share/chezmoi/.chezmoiscripts\" -maxdepth 1 -type f -name \"*apt-packages*\" -exec mv -t \"\$HOME/.local/share/chezmoi/.disabled-chezmoiscripts\" {} + 2>/dev/null || true; fi && chezmoi apply --force --no-tty'
 fi
 if [[ '$DOTFILES_RUN_MISE' == '1' ]]; then
-  runuser -u '$WEB_USER' -- bash -lc 'mise install'
+  runuser -u '$WEB_USER' -- env HOME='/home/$WEB_USER' USER='$WEB_USER' LOGNAME='$WEB_USER' MISE_HTTP_TIMEOUT=180 MISE_FETCH_REMOTE_VERSIONS_TIMEOUT=60 bash -lc 'cd \"\$HOME\" && mise install'
+fi
+if [[ -n '$DOTFILES_AGE_KEY_FILE' ]]; then
+  rm -f '/home/$WEB_USER/.config/chezmoi/key.txt'
 fi"
 }
 
@@ -600,7 +828,6 @@ args=(
   --provider=oidc
   --provider-display-name="$OIDC_PROVIDER_DISPLAY_NAME"
   --http-address="0.0.0.0:$OIDC_PROXY_PORT"
-  --upstream="http://127.0.0.1:$WETTY_PORT/"
   --redirect-url="$redirect_url"
   --oidc-issuer-url="$OIDC_ISSUER_URL"
   --client-id="$OIDC_CLIENT_ID"
@@ -612,10 +839,16 @@ args=(
   --skip-provider-button="$OIDC_SKIP_PROVIDER_BUTTON"
   --pass-access-token=true
   --pass-authorization-header=true
+  --pass-user-headers=true
   --set-xauthrequest=true
   --cookie-refresh="$OIDC_COOKIE_REFRESH"
   --cookie-expire="$OIDC_COOKIE_EXPIRE"
 )
+
+if [[ "${SETUP_ENABLED:-1}" == "1" ]]; then
+  args+=(--upstream="http://127.0.0.1:$SETUP_PORT/setup/")
+fi
+args+=(--upstream="http://127.0.0.1:$IDENTITY_PROXY_PORT/")
 
 if [[ -s /etc/incus-web/authenticated-emails ]]; then
   args+=(--authenticated-emails-file=/etc/incus-web/authenticated-emails)
@@ -624,11 +857,31 @@ fi
 exec /usr/local/bin/oauth2-proxy "${args[@]}"
 EOF
 chmod 755 /usr/local/bin/incus-web-oauth2-proxy-start
+. /etc/incus-web/oauth2-proxy.env
+cat >/etc/systemd/system/incus-web-identity-proxy.service <<EOF
+[Unit]
+Description=incus-web identity proxy
+After=network-online.target '"$terminal_service"'
+Wants=network-online.target '"$terminal_service"'
+
+[Service]
+Environment=HOST=127.0.0.1
+Environment=PORT=$IDENTITY_PROXY_PORT
+Environment=TARGET_HOST=127.0.0.1
+Environment=TARGET_PORT=$WETTY_PORT
+Environment=OAUTH2_PROXY_URL=http://127.0.0.1:$OIDC_PROXY_PORT
+ExecStart=/usr/local/bin/incus-web-identity-proxy
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
+EOF
 cat >/etc/systemd/system/oauth2-proxy.service <<'"'"'EOF'"'"'
 [Unit]
 Description=OAuth2 Proxy for incus-web
-After=network-online.target '"$terminal_service"'
-Wants=network-online.target '"$terminal_service"'
+After=network-online.target incus-web-identity-proxy.service
+Wants=network-online.target incus-web-identity-proxy.service
 
 [Service]
 ExecStart=/usr/local/bin/incus-web-oauth2-proxy-start
@@ -639,6 +892,7 @@ RestartSec=2
 WantedBy=multi-user.target
 EOF
 systemctl daemon-reload
+systemctl enable --now incus-web-identity-proxy
 systemctl enable --now oauth2-proxy'
 }
 
@@ -692,12 +946,19 @@ configure_access() {
 
 validate_container() {
   local name="$1"
+  local public_host=""
+
+  if [[ -n "${PUBLIC_URL:-}" ]]; then
+    public_host="${PUBLIC_URL#*://}"
+    public_host="${public_host%%/*}"
+    public_host="${public_host%%:*}"
+  fi
 
   log "validating toolchain and network boundaries"
 
   agent_check() {
     local command="$1"
-    container_bash "$name" "su -l '$WEB_USER' -c '/usr/local/bin/agent-env $command'"
+    container_bash "$name" "runuser -u '$WEB_USER' -- env HOME='/home/$WEB_USER' USER='$WEB_USER' LOGNAME='$WEB_USER' /usr/local/bin/agent-env $command"
   }
 
   expect_blocked_lan() {
@@ -727,8 +988,14 @@ validate_container() {
       ;;
     oidc)
       container_bash "$name" "oauth2-proxy --version >/dev/null"
+      container_bash "$name" "systemctl is-active --quiet incus-web-identity-proxy"
       container_bash "$name" "systemctl is-active --quiet oauth2-proxy"
+      container_bash "$name" "curl -fsSI 'http://127.0.0.1:$IDENTITY_PROXY_PORT/' >/dev/null"
       container_bash "$name" "curl -fsSI 'http://127.0.0.1:$OIDC_PROXY_PORT/oauth2/sign_in' >/dev/null"
+      if [[ "$SETUP_ENABLED" == "1" ]]; then
+        container_bash "$name" "systemctl is-active --quiet incus-web-setup"
+        container_bash "$name" "curl -fsSI 'http://127.0.0.1:$OIDC_PROXY_PORT/setup/' >/dev/null"
+      fi
       ;;
   esac
   case "$TERMINAL_BACKEND" in
@@ -740,6 +1007,9 @@ validate_container() {
       container_bash "$name" "! systemctl is-active --quiet wetty"
       container_bash "$name" "systemctl is-active --quiet ghostty-web"
       container_bash "$name" "curl -fsS 'http://127.0.0.1:$WETTY_PORT/api/token' | jq -e '.token | type == \"string\" and length > 0' >/dev/null"
+      if [[ -n "$public_host" ]]; then
+        container_bash "$name" "curl -fsS -H 'Host: $public_host' -H 'Origin: ${PUBLIC_URL%/}' 'http://127.0.0.1:$WETTY_PORT/api/token' | jq -e '.token | type == \"string\" and length > 0' >/dev/null"
+      fi
       ;;
   esac
   agent_check "nc -vz -w 5 1.1.1.1 443"
