@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "incus_web",
+  "project_id": "b04f39cc-8e84-4951-99a6-2739d0928394"
+}

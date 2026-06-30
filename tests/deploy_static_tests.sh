@@ -7,6 +7,7 @@ profile="$root/incus-web-profile.yaml"
 definition="$root/distrobuilder.yaml"
 build_image="$root/scripts/build-image.sh"
 lib="$root/scripts/incus-web-lib.sh"
+info_script="$root/scripts/incus-web-info.sh"
 smoke_image="$root/scripts/smoke-image.sh"
 workflow="$root/.github/workflows/build-image.yml"
 
@@ -14,6 +15,14 @@ require_literal() {
   local needle="$1"
   if ! grep -Fq -- "$needle" "$deploy" "$lib"; then
     printf 'missing expected deploy surface content: %s\n' "$needle" >&2
+    exit 1
+  fi
+}
+
+require_info_literal() {
+  local needle="$1"
+  if ! grep -Fq -- "$needle" "$info_script"; then
+    printf 'missing expected info script content: %s\n' "$needle" >&2
     exit 1
   fi
 }
@@ -29,6 +38,7 @@ require_literal "rustc -V"
 require_literal "cargo -V"
 require_literal "git --version"
 require_literal "gh --version"
+require_literal "zsh --version"
 require_literal "claude --version"
 require_literal "codex --version"
 require_literal "tailscale version"
@@ -43,8 +53,61 @@ require_literal "OIDC_ISSUER_URL="
 require_literal "OIDC_CLIENT_ID="
 require_literal "OIDC_CLIENT_SECRET="
 require_literal "OIDC_COOKIE_SECRET="
+require_literal "cut -c1-32"
 require_literal "OIDC_HOST_PORT="
 require_literal "OAUTH2_PROXY_VERSION="
+require_literal "TERMINAL_BACKEND="
+require_literal "GHOSTTY_WEB_DEMO_VERSION="
+require_literal "SETUP_ENABLED="
+require_literal "SETUP_PORT="
+require_literal "SETUP_ALLOWED_EMAILS="
+require_literal "SETUP_ALLOW_KEY_PERSISTENCE="
+require_literal "SETUP_COMMAND_TIMEOUT_MS="
+require_literal "IDENTITY_PROXY_PORT="
+require_literal "OAUTH2_PROXY_URL=http://127.0.0.1:\$OIDC_PROXY_PORT"
+require_literal "incus-web-bootstrap-server"
+require_literal "incus-web-identity-proxy"
+require_literal "incus-web-info"
+require_literal "incus-web-open"
+require_literal "INCUS_WEB_INFO_SCRIPT"
+require_literal "INCUS_WEB_IDENTITY_PROXY"
+require_literal "INCUS_WEB_OPEN_SCRIPT"
+require_literal "BROWSER=/usr/local/bin/incus-web-open"
+require_literal "INCUS_WEB_WORKSPACE_LABEL="
+require_literal "--upstream=\"http://127.0.0.1:\$SETUP_PORT/setup/\""
+require_literal "GHOSTTY_ALLOWED_HOSTS"
+require_literal "public_host=\"\${PUBLIC_URL#*://}\""
+require_literal "DOTFILES_REPO="
+require_literal "DOTFILES_SOURCE_DIR="
+require_literal "DOTFILES_RUN_MISE="
+require_literal "DOTFILES_SKIP_APT="
+require_literal "incus-web-dotfiles-source.tgz"
+require_literal "chezmoi --source"
+require_info_literal "check_commands()"
+require_info_literal "check_packages()"
+require_info_literal "check_mise()"
+require_info_literal "check_dotfiles()"
+require_info_literal "base packages installed"
+require_info_literal "source clean"
+if grep -Fq -- "labelFromBearer" "$root/scripts/identity-proxy.mjs"; then
+  printf 'identity proxy must not trust unsigned bearer-token labels\n' >&2
+  exit 1
+fi
+if ! grep -Fq -- "queryUserinfo" "$root/scripts/identity-proxy.mjs"; then
+  printf 'missing expected identity proxy userinfo fallback\n' >&2
+  exit 1
+fi
+for needle in \
+  "apps/web/**" \
+  "npm ci --prefix apps/web" \
+  "npm --prefix apps/web run lint" \
+  "npm --prefix apps/web run test" \
+  "npm --prefix apps/web run build"; do
+  if ! grep -Fq -- "$needle" "$workflow"; then
+    printf 'missing expected web CI content: %s\n' "$needle" >&2
+    exit 1
+  fi
+done
 require_literal "nc -vz -w 5 1.1.1.1 443"
 require_literal "expect_blocked_lan 10.0.0.1 80"
 require_literal "expect_blocked_lan 172.16.0.1 80"
@@ -93,7 +156,7 @@ fi
 
 for needle in \
   "name: incus-web-agent" \
-  "security.privileged: \"true\"" \
+  "security.privileged: \"false\"" \
   "security.nesting: \"true\"" \
   "limits.cpu: \"2\"" \
   "limits.memory: 4GiB" \
@@ -124,13 +187,16 @@ for needle in \
   "release: trixie" \
   "name: incus-web-agent" \
   "build-essential" \
+  "zsh" \
   "golang-go" \
   "rustc" \
   "latest-v22.x" \
   "npm install -g @anthropic-ai/claude-code" \
   "npm install -g wetty" \
+  "@ghostty-web/demo@0.4.0-next.20.g1858a59" \
+  "ghostty-web-demo" \
   "tailscale.com/install.sh" \
-  "chatgpt.com/codex/install.sh" \
+  "npm install -g @openai/codex" \
   "systemctl enable wetty.service" \
   "systemctl enable tailscaled.service"; do
   if ! grep -Fq -- "$needle" "$definition"; then

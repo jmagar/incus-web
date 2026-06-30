@@ -8,13 +8,13 @@ The deploy script is meant to be curlable, but it does not bake secrets into the
 
 - An Incus container from `images:debian/trixie` by default.
 - A non-root terminal user named `agent` by default.
-- A small demo developer toolchain: Node/npm, Python, Go, Rust/Cargo, Git, GitHub CLI, Claude Code, and Codex CLI.
-- WeTTY listening inside the container on `127.0.0.1:3000`.
+- A small demo developer toolchain: zsh, Node/npm, Python, Go, Rust/Cargo, Git, GitHub CLI, Claude Code, and Codex CLI.
+- A browser terminal listening inside the container on `127.0.0.1:3000`, using WeTTY by default or the experimental `ghostty-web` backend when enabled.
 - One of two access layers:
-  - Tailscale running inside the privileged system container with a `tailscale serve` HTTPS route.
+  - Tailscale running inside the nested, unprivileged system container with a `tailscale serve` HTTPS route.
   - `oauth2-proxy` running inside the container as an OIDC-authenticated reverse proxy in front of WeTTY.
 - A dedicated Incus bridge with an ACL that blocks direct egress to RFC1918 and IPv4 link-local LAN ranges.
-- A committed Incus profile YAML (`incus-web-profile.yaml`) as the source of truth for the container shape, including `security.privileged=true` and `security.nesting=true`.
+- A committed Incus profile YAML (`incus-web-profile.yaml`) as the source of truth for the container shape, including `security.privileged=false` and `security.nesting=true`.
 - A host directory mounted into the container for persistent working files.
 
 ## Requirements
@@ -58,6 +58,26 @@ IMAGE=incus-web-agent ./deploy.sh
 ```
 
 For the durable rolling build, download `incus-web-agent.tar.xz` from the `incus-web-agent-latest` GitHub Release instead of relying on the expiring Actions artifact.
+
+## Control Plane Web App
+
+The first multi-tenant control-plane slice lives in `apps/web`. It is a Next.js App Router app using Aurora components installed from the Aurora shadcn registry.
+
+Run it locally:
+
+```bash
+npm --prefix apps/web run dev
+```
+
+Verify it:
+
+```bash
+npm --prefix apps/web run lint
+npm --prefix apps/web run test
+npm --prefix apps/web run build
+```
+
+This first slice is read-only. It reads authenticated identity from reverse-proxy/OIDC headers when present, falls back to a local development actor, and renders the current `incus-web` workspace inventory without mutating Incus state.
 
 ## Quick Start
 
@@ -119,8 +139,22 @@ OIDC_SKIP_PROVIDER_BUTTON=true
 OIDC_COOKIE_REFRESH=1h
 OIDC_COOKIE_EXPIRE=8h
 OAUTH2_PROXY_VERSION=v7.15.3
+TERMINAL_BACKEND=wetty
+GHOSTTY_WEB_DEMO_VERSION=0.4.0-next.20.g1858a59
+SETUP_ENABLED=1
+SETUP_PORT=3080
+SETUP_ALLOWED_EMAILS=
+SETUP_ALLOW_KEY_PERSISTENCE=0
+SETUP_COMMAND_TIMEOUT_MS=1200000
+IDENTITY_PROXY_PORT=3090
 WETTY_PORT=3000
 WEB_USER=agent
+INCUS_WEB_WORKSPACE_LABEL=
+DOTFILES_REPO=
+DOTFILES_SOURCE_DIR=
+DOTFILES_AGE_KEY_FILE=
+DOTFILES_RUN_MISE=0
+DOTFILES_SKIP_APT=1
 HOST_WORKSPACE=$HOME/incus-web-data/incus-web
 CONTAINER_WORKSPACE=/workspace
 DISK_SHIFT=true
@@ -159,8 +193,22 @@ Important variables:
 - `OIDC_SKIP_PROVIDER_BUTTON`: skip the oauth2-proxy provider selection page.
 - `OIDC_COOKIE_REFRESH` and `OIDC_COOKIE_EXPIRE`: oauth2-proxy cookie lifetime controls.
 - `OAUTH2_PROXY_VERSION`: oauth2-proxy release to install.
+- `TERMINAL_BACKEND`: `wetty` or `ghostty-web`. Ghostty-web is experimental and still runs behind the same access layer.
+- `GHOSTTY_WEB_DEMO_VERSION`: `@ghostty-web/demo` package version used by the experimental backend. The default pins the `next` build that includes same-origin WebSocket token checks.
+- `SETUP_ENABLED`: set to `1` to expose the authenticated `/setup/` page for per-user dotfiles repo entry and age key upload. This applies inside that user's workspace container; it is not baked into the shared image.
+- `SETUP_PORT`: local setup service port inside the container.
+- `SETUP_ALLOWED_EMAILS`: comma- or space-separated owner email allow list for `/setup/`; defaults to `OIDC_ALLOWED_EMAILS`. Setup returns `403` when no authenticated email is allowed.
+- `SETUP_ALLOW_KEY_PERSISTENCE`: set to `1` only when the workspace owner explicitly wants uploaded age keys stored encrypted for future applies. Default `0` removes uploaded keys after each apply.
+- `SETUP_COMMAND_TIMEOUT_MS`: timeout for each setup subprocess.
+- `IDENTITY_PROXY_PORT`: local identity-aware proxy port between oauth2-proxy and the terminal backend.
 - `WETTY_PORT`: local WeTTY HTTP port inside the container.
 - `WEB_USER`: non-root terminal user created inside the container.
+- `INCUS_WEB_WORKSPACE_LABEL`: optional label shown in the terminal workspace banner, such as a user email or display name.
+- `DOTFILES_REPO`: optional per-container chezmoi source, passed to `chezmoi init --apply` as the terminal user.
+- `DOTFILES_SOURCE_DIR`: optional host path to an existing chezmoi source directory for this container. When set, deploy copies it into the container and applies it without requiring GitHub credentials in the container.
+- `DOTFILES_AGE_KEY_FILE`: optional host path copied to `~/.config/chezmoi/key.txt` for encrypted chezmoi secrets.
+- `DOTFILES_RUN_MISE`: set to `1` to install mise for the terminal user and run `mise install` after dotfiles apply.
+- `DOTFILES_SKIP_APT`: set to `1` to skip apt/system-package scripts from imported dotfiles. User-level dotfiles and mise still apply; root-level package scripts require an explicit opt-in.
 - `HOST_WORKSPACE`: host path mounted into the container.
 - `CONTAINER_WORKSPACE`: mount point inside the container.
 - `DISK_SHIFT`: use Incus idmapped shifting for the mounted workspace.
@@ -211,3 +259,4 @@ Configure the OIDC app callback as `https://incus-web.example.com/oauth2/callbac
 - The Tailscale auth key is copied into the container only long enough to run `tailscale up`, then removed.
 - In OIDC mode, `oauth2-proxy` is the only service intended to be exposed; WeTTY stays bound to `127.0.0.1` inside the container.
 - Do not build an Incus image with `/var/lib/tailscale` already populated. Cloned containers should join Tailscale with their own node identity.
+- The default profile is nested but unprivileged. Keep privileged containers out of the hosted multi-tenant path; use a dedicated trusted pool or an Incus VM for workloads that truly require privileged semantics.

@@ -49,8 +49,33 @@ main() {
   OIDC_COOKIE_REFRESH="${OIDC_COOKIE_REFRESH:-1h}"
   OIDC_COOKIE_EXPIRE="${OIDC_COOKIE_EXPIRE:-8h}"
   OAUTH2_PROXY_VERSION="${OAUTH2_PROXY_VERSION:-v7.15.3}"
+  TERMINAL_BACKEND="${TERMINAL_BACKEND:-wetty}"
+  GHOSTTY_WEB_DEMO_VERSION="${GHOSTTY_WEB_DEMO_VERSION:-0.4.0-next.20.g1858a59}"
+  SETUP_PORT="${SETUP_PORT:-3080}"
+  SETUP_ENABLED="${SETUP_ENABLED:-1}"
+  SETUP_ALLOWED_EMAILS="${SETUP_ALLOWED_EMAILS:-$OIDC_ALLOWED_EMAILS}"
+  SETUP_ALLOW_KEY_PERSISTENCE="${SETUP_ALLOW_KEY_PERSISTENCE:-0}"
+  SETUP_COMMAND_TIMEOUT_MS="${SETUP_COMMAND_TIMEOUT_MS:-1200000}"
+  IDENTITY_PROXY_PORT="${IDENTITY_PROXY_PORT:-3090}"
+  INCUS_WEB_BOOTSTRAP_SERVER="${INCUS_WEB_BOOTSTRAP_SERVER:-$SCRIPT_DIR/scripts/bootstrap-server.mjs}"
+  INCUS_WEB_BOOTSTRAP_SERVER_URL="${INCUS_WEB_BOOTSTRAP_SERVER_URL:-https://raw.githubusercontent.com/jmagar/incus-web/main/scripts/bootstrap-server.mjs}"
+  INCUS_WEB_IDENTITY_PROXY="${INCUS_WEB_IDENTITY_PROXY:-$SCRIPT_DIR/scripts/identity-proxy.mjs}"
+  INCUS_WEB_IDENTITY_PROXY_URL="${INCUS_WEB_IDENTITY_PROXY_URL:-https://raw.githubusercontent.com/jmagar/incus-web/main/scripts/identity-proxy.mjs}"
+  INCUS_WEB_INFO_SCRIPT="${INCUS_WEB_INFO_SCRIPT:-$SCRIPT_DIR/scripts/incus-web-info.sh}"
+  INCUS_WEB_INFO_SCRIPT_URL="${INCUS_WEB_INFO_SCRIPT_URL:-https://raw.githubusercontent.com/jmagar/incus-web/main/scripts/incus-web-info.sh}"
+  INCUS_WEB_OPEN_SCRIPT="${INCUS_WEB_OPEN_SCRIPT:-$SCRIPT_DIR/scripts/incus-web-open.sh}"
+  INCUS_WEB_OPEN_SCRIPT_URL="${INCUS_WEB_OPEN_SCRIPT_URL:-https://raw.githubusercontent.com/jmagar/incus-web/main/scripts/incus-web-open.sh}"
   WETTY_PORT="${WETTY_PORT:-3000}"
   WEB_USER="${WEB_USER:-agent}"
+  INCUS_WEB_WORKSPACE_LABEL="${INCUS_WEB_WORKSPACE_LABEL:-}"
+  if [[ -z "$INCUS_WEB_WORKSPACE_LABEL" && -n "$OIDC_ALLOWED_EMAILS" && "$OIDC_ALLOWED_EMAILS" != *","* && "$OIDC_ALLOWED_EMAILS" != *" "* ]]; then
+    INCUS_WEB_WORKSPACE_LABEL="$OIDC_ALLOWED_EMAILS"
+  fi
+  DOTFILES_REPO="${DOTFILES_REPO:-}"
+  DOTFILES_SOURCE_DIR="${DOTFILES_SOURCE_DIR:-}"
+  DOTFILES_AGE_KEY_FILE="${DOTFILES_AGE_KEY_FILE:-}"
+  DOTFILES_RUN_MISE="${DOTFILES_RUN_MISE:-0}"
+  DOTFILES_SKIP_APT="${DOTFILES_SKIP_APT:-1}"
   HOST_WORKSPACE="${HOST_WORKSPACE:-$HOME/incus-web-data/$CONTAINER_NAME}"
   CONTAINER_WORKSPACE="${CONTAINER_WORKSPACE:-/workspace}"
   DISK_SHIFT="${DISK_SHIFT:-true}"
@@ -67,6 +92,14 @@ main() {
       ;;
     *)
       die "ACCESS_MODE must be tailscale or oidc"
+      ;;
+  esac
+
+  case "$TERMINAL_BACKEND" in
+    wetty|ghostty-web)
+      ;;
+    *)
+      die "TERMINAL_BACKEND must be wetty or ghostty-web"
       ;;
   esac
 

@@ -43,7 +43,7 @@ files:
       export HOME=/home/agent
       export USER=agent
       export LOGNAME=agent
-      export PATH="$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+      export PATH="/usr/local/bin:/usr/bin:/bin:$HOME/.local/bin:$PATH"
 
       cd /workspace 2>/dev/null || cd "$HOME"
       exec "$@"
@@ -59,7 +59,7 @@ files:
 
       [Service]
       Environment=HOME=/home/agent
-      ExecStart=/usr/local/bin/wetty --host 127.0.0.1 --port 3000 --base / --command 'runuser -u agent -- /bin/bash -l'
+      ExecStart=/usr/local/bin/wetty --host 127.0.0.1 --port 3000 --base / --command 'runuser -u agent -- /usr/bin/zsh -l'
       Restart=always
       RestartSec=2
 
@@ -92,6 +92,7 @@ packages:
         - sudo
         - unzip
         - zip
+        - zsh
 
 actions:
   - trigger: post-packages
@@ -108,7 +109,7 @@ actions:
       export HOME=/home/agent
       export USER=agent
       export LOGNAME=agent
-      export PATH="$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+      export PATH="/usr/local/bin:/usr/bin:/bin:$HOME/.local/bin:$PATH"
 
       cd /workspace 2>/dev/null || cd "$HOME"
       exec "$@"
@@ -124,7 +125,7 @@ actions:
 
       [Service]
       Environment=HOME=/home/agent
-      ExecStart=/usr/local/bin/wetty --host 127.0.0.1 --port 3000 --base / --command 'runuser -u agent -- /bin/bash -l'
+      ExecStart=/usr/local/bin/wetty --host 127.0.0.1 --port 3000 --base / --command 'runuser -u agent -- /usr/bin/zsh -l'
       Restart=always
       RestartSec=2
 
@@ -184,9 +185,14 @@ actions:
         npm install -g wetty
       fi
 
-      if ! id -u agent >/dev/null 2>&1; then
-        useradd -m -s /bin/bash agent
+      if ! command -v ghostty-web-demo >/dev/null 2>&1; then
+        npm install -g @ghostty-web/demo@0.4.0-next.20.g1858a59
       fi
+
+      if ! id -u agent >/dev/null 2>&1; then
+        useradd -m -s /usr/bin/zsh agent
+      fi
+      usermod -s /usr/bin/zsh agent
 
       install -d -o agent -g agent /workspace
       usermod -aG sudo agent
@@ -203,7 +209,7 @@ actions:
       chown agent:agent /home/agent/.bashrc
 
       if ! runuser -u agent -- bash -lc 'command -v codex >/dev/null 2>&1'; then
-        runuser -u agent -- bash -lc 'cd "$HOME" && curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh'
+        npm install -g @openai/codex
       fi
 
       systemctl enable wetty.service
