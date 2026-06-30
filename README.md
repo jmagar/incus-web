@@ -59,6 +59,26 @@ IMAGE=incus-web-agent ./deploy.sh
 
 For the durable rolling build, download `incus-web-agent.tar.xz` from the `incus-web-agent-latest` GitHub Release instead of relying on the expiring Actions artifact.
 
+## Control Plane Web App
+
+The first multi-tenant control-plane slice lives in `apps/web`. It is a Next.js App Router app using Aurora components installed from the Aurora shadcn registry.
+
+Run it locally:
+
+```bash
+npm --prefix apps/web run dev
+```
+
+Verify it:
+
+```bash
+npm --prefix apps/web run lint
+npm --prefix apps/web run test
+npm --prefix apps/web run build
+```
+
+This first slice is read-only. It reads authenticated identity from reverse-proxy/OIDC headers when present, falls back to a local development actor, and renders the current `incus-web` workspace inventory without mutating Incus state.
+
 ## Quick Start
 
 Create a working directory and a `.env` file:
