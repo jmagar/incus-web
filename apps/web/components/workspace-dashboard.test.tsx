@@ -37,7 +37,6 @@ const inventory: WorkspaceInventory = {
         commandStatus: "unknown",
         packageStatus: "unknown",
       },
-      terminalUrl: "/terminal/incus-web",
       createdAt: "2026-06-30T00:00:00.000Z",
       updatedAt: "2026-06-30T00:00:00.000Z",
     },
@@ -58,7 +57,13 @@ describe("WorkspaceDashboard", () => {
     expect(screen.getByText("mise")).toBeInTheDocument();
     expect(screen.getByText("dotfiles")).toBeInTheDocument();
     expect(
-      screen.getByRole("link", { name: /open terminal/i }),
-    ).toHaveAttribute("href", "/terminal/incus-web");
+      screen.getByRole("button", { name: /terminal pending/i }),
+    ).toBeDisabled();
+  });
+
+  it("renders an empty-access state when no workspace is visible", () => {
+    render(<WorkspaceDashboard inventory={{ ...inventory, workspaces: [] }} />);
+
+    expect(screen.getByText("No workspace access")).toBeInTheDocument();
   });
 });

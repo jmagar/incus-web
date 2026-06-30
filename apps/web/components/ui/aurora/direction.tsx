@@ -11,4 +11,3 @@ export function Direction({ ref, dir = "ltr", ...props }: DirectionProps & { ref
 }
 
 export default Direction
-

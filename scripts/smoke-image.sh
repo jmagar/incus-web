@@ -49,7 +49,7 @@ cleanup_smoke_container() {
     sleep 1
   done
 
-  log "warning: smoke container $SMOKE_CONTAINER_NAME still exists after cleanup"
+  die "smoke container $SMOKE_CONTAINER_NAME still exists after cleanup"
 }
 
 timeout_container_bash() {

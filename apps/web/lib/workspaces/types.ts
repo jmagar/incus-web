@@ -65,7 +65,8 @@ export type Workspace = {
   resourceProfileId: ResourceProfileId;
   resources: WorkspaceResources;
   setup: WorkspaceSetupSummary;
-  terminalUrl: string;
+  terminalUrl?: string;
+  accessNote?: string;
   createdAt: string;
   updatedAt: string;
 };

@@ -6,10 +6,42 @@ import type {
 
 const now = "2026-06-30T00:00:00.000Z";
 
-function currentWorkspace(actor: ActorContext): Workspace {
+type ConfiguredOwner = {
+  userId: string;
+  email?: string;
+};
+
+function configuredOwner(): ConfiguredOwner | undefined {
+  const subject = process.env.INCUS_WEB_WORKSPACE_OWNER_SUBJECT?.trim();
+  if (subject) return { userId: `oidc:${subject}` };
+
+  const email = process.env.INCUS_WEB_WORKSPACE_OWNER_EMAIL?.trim();
+  if (email) return { userId: `oidc:${email}`, email: email.toLowerCase() };
+
+  if (
+    process.env.INCUS_WEB_ALLOW_DEV_AUTH === "1" ||
+    process.env.NODE_ENV !== "production"
+  ) {
+    return {
+      userId: "oidc:dev@incus-web.local",
+      email: "dev@incus-web.local",
+    };
+  }
+
+  return undefined;
+}
+
+function actorMatchesOwner(actor: ActorContext, owner: ConfiguredOwner) {
+  return (
+    actor.userId === owner.userId ||
+    (owner.email !== undefined && actor.email.toLowerCase() === owner.email)
+  );
+}
+
+function currentWorkspace(ownerUserId: string): Workspace {
   return {
     id: "workspace-incus-web",
-    ownerUserId: actor.userId,
+    ownerUserId,
     name: "incus-web",
     slug: "incus-web",
     incusProject: "incus-web",
@@ -30,7 +62,8 @@ function currentWorkspace(actor: ActorContext): Workspace {
       packageStatus: "unknown",
       updatedAt: now,
     },
-    terminalUrl: "/terminal/incus-web",
+    accessNote:
+      "Single-container prototype. Terminal routing moves behind workspace-scoped sessions before multi-user sharing.",
     createdAt: now,
     updatedAt: now,
   };
@@ -39,8 +72,14 @@ function currentWorkspace(actor: ActorContext): Workspace {
 export async function getWorkspaceInventory(
   actor: ActorContext,
 ): Promise<WorkspaceInventory> {
+  const owner = configuredOwner();
+  const workspaces =
+    owner && actorMatchesOwner(actor, owner)
+      ? [currentWorkspace(owner.userId)]
+      : [];
+
   return {
     actor,
-    workspaces: [currentWorkspace(actor)],
+    workspaces,
   };
 }

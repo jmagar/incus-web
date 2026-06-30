@@ -60,6 +60,9 @@ require_literal "TERMINAL_BACKEND="
 require_literal "GHOSTTY_WEB_DEMO_VERSION="
 require_literal "SETUP_ENABLED="
 require_literal "SETUP_PORT="
+require_literal "SETUP_ALLOWED_EMAILS="
+require_literal "SETUP_ALLOW_KEY_PERSISTENCE="
+require_literal "SETUP_COMMAND_TIMEOUT_MS="
 require_literal "IDENTITY_PROXY_PORT="
 require_literal "OAUTH2_PROXY_URL=http://127.0.0.1:\$OIDC_PROXY_PORT"
 require_literal "incus-web-bootstrap-server"
@@ -86,14 +89,25 @@ require_info_literal "check_mise()"
 require_info_literal "check_dotfiles()"
 require_info_literal "base packages installed"
 require_info_literal "source clean"
-if ! grep -Fq -- "labelFromBearer" "$root/scripts/identity-proxy.mjs"; then
-  printf 'missing expected identity proxy JWT fallback\n' >&2
+if grep -Fq -- "labelFromBearer" "$root/scripts/identity-proxy.mjs"; then
+  printf 'identity proxy must not trust unsigned bearer-token labels\n' >&2
   exit 1
 fi
 if ! grep -Fq -- "queryUserinfo" "$root/scripts/identity-proxy.mjs"; then
   printf 'missing expected identity proxy userinfo fallback\n' >&2
   exit 1
 fi
+for needle in \
+  "apps/web/**" \
+  "npm ci --prefix apps/web" \
+  "npm --prefix apps/web run lint" \
+  "npm --prefix apps/web run test" \
+  "npm --prefix apps/web run build"; do
+  if ! grep -Fq -- "$needle" "$workflow"; then
+    printf 'missing expected web CI content: %s\n' "$needle" >&2
+    exit 1
+  fi
+done
 require_literal "nc -vz -w 5 1.1.1.1 443"
 require_literal "expect_blocked_lan 10.0.0.1 80"
 require_literal "expect_blocked_lan 172.16.0.1 80"

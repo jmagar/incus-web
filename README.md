@@ -143,6 +143,9 @@ TERMINAL_BACKEND=wetty
 GHOSTTY_WEB_DEMO_VERSION=0.4.0-next.20.g1858a59
 SETUP_ENABLED=1
 SETUP_PORT=3080
+SETUP_ALLOWED_EMAILS=
+SETUP_ALLOW_KEY_PERSISTENCE=0
+SETUP_COMMAND_TIMEOUT_MS=1200000
 IDENTITY_PROXY_PORT=3090
 WETTY_PORT=3000
 WEB_USER=agent
@@ -194,6 +197,9 @@ Important variables:
 - `GHOSTTY_WEB_DEMO_VERSION`: `@ghostty-web/demo` package version used by the experimental backend. The default pins the `next` build that includes same-origin WebSocket token checks.
 - `SETUP_ENABLED`: set to `1` to expose the authenticated `/setup/` page for per-user dotfiles repo entry and age key upload. This applies inside that user's workspace container; it is not baked into the shared image.
 - `SETUP_PORT`: local setup service port inside the container.
+- `SETUP_ALLOWED_EMAILS`: comma- or space-separated owner email allow list for `/setup/`; defaults to `OIDC_ALLOWED_EMAILS`. Setup returns `403` when no authenticated email is allowed.
+- `SETUP_ALLOW_KEY_PERSISTENCE`: set to `1` only when the workspace owner explicitly wants uploaded age keys stored encrypted for future applies. Default `0` removes uploaded keys after each apply.
+- `SETUP_COMMAND_TIMEOUT_MS`: timeout for each setup subprocess.
 - `IDENTITY_PROXY_PORT`: local identity-aware proxy port between oauth2-proxy and the terminal backend.
 - `WETTY_PORT`: local WeTTY HTTP port inside the container.
 - `WEB_USER`: non-root terminal user created inside the container.

@@ -9,6 +9,7 @@ const targetHost = process.env.TARGET_HOST || "127.0.0.1";
 const targetPort = Number.parseInt(process.env.TARGET_PORT || "3000", 10);
 const identityPath = process.env.IDENTITY_PATH || "/run/incus-web/identity-label";
 const oauth2ProxyUrl = process.env.OAUTH2_PROXY_URL || "";
+const maxUserinfoBytes = Number.parseInt(process.env.USERINFO_MAX_BYTES || "65536", 10);
 
 function firstHeader(headers, names) {
   for (const name of names) {
@@ -17,37 +18,6 @@ function firstHeader(headers, names) {
     if (typeof value === "string" && value.trim()) return value.trim();
   }
   return "";
-}
-
-function decodeJwtPayload(token) {
-  const parts = token.split(".");
-  if (parts.length < 2 || parts[1].length > 65536) return {};
-
-  try {
-    const payload = parts[1].replace(/-/g, "+").replace(/_/g, "/");
-    const padded = payload.padEnd(payload.length + ((4 - (payload.length % 4)) % 4), "=");
-    return JSON.parse(Buffer.from(padded, "base64").toString("utf8"));
-  } catch {
-    return {};
-  }
-}
-
-function labelFromBearer(headers) {
-  const authorization = firstHeader(headers, ["authorization"]);
-  const match = authorization.match(/^Bearer\s+(.+)$/i);
-  if (!match) return { name: "", email: "" };
-
-  const claims = decodeJwtPayload(match[1]);
-  const name = String(
-    claims.name ||
-    claims.preferred_username ||
-    [claims.given_name, claims.family_name].filter(Boolean).join(" ") ||
-    claims.user ||
-    claims.sub ||
-    "",
-  ).trim();
-  const email = String(claims.email || "").trim();
-  return { name, email };
 }
 
 function queryUserinfo(headers) {
@@ -64,6 +34,12 @@ function queryUserinfo(headers) {
   }
 
   return new Promise((resolve) => {
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
     const req = httpRequest({
       hostname: url.hostname,
       port: url.port,
@@ -77,28 +53,35 @@ function queryUserinfo(headers) {
       timeout: 1500,
     }, (res) => {
       const chunks = [];
+      let received = 0;
       res.on("data", (chunk) => chunks.push(chunk));
+      res.on("data", (chunk) => {
+        received += chunk.length;
+        if (received > maxUserinfoBytes) {
+          req.destroy(new Error("userinfo response too large"));
+        }
+      });
       res.on("end", () => {
         if ((res.statusCode || 500) >= 400) {
-          resolve({ name: "", email: "" });
+          finish({ name: "", email: "" });
           return;
         }
 
         try {
-          const body = Buffer.concat(chunks, 65536).toString("utf8");
+          const body = Buffer.concat(chunks, received).toString("utf8");
           const info = JSON.parse(body);
-          resolve({
+          finish({
             name: String(info.user || info.preferred_username || info.name || "").trim(),
             email: String(info.email || "").trim(),
           });
         } catch {
-          resolve({ name: "", email: "" });
+          finish({ name: "", email: "" });
         }
       });
     });
 
     req.on("timeout", () => req.destroy());
-    req.on("error", () => resolve({ name: "", email: "" }));
+    req.on("error", () => finish({ name: "", email: "" }));
     req.end();
   });
 }
@@ -118,10 +101,6 @@ async function recordIdentity(headers) {
   ]);
 
   if (!name && !email) {
-    ({ name, email } = labelFromBearer(headers));
-  }
-
-  if (!name && !email) {
     ({ name, email } = await queryUserinfo(headers));
   }
 
@@ -135,7 +114,9 @@ async function recordIdentity(headers) {
 }
 
 async function proxyHttp(req, res) {
-  await recordIdentity(req.headers).catch(() => {});
+  await recordIdentity(req.headers).catch((error) => {
+    console.error(`identity record failed for ${req.method} ${req.url}: ${error.message}`);
+  });
   const upstream = httpRequest({
     hostname: targetHost,
     port: targetPort,
@@ -154,7 +135,9 @@ async function proxyHttp(req, res) {
 }
 
 function proxyUpgrade(req, socket, head) {
-  recordIdentity(req.headers).catch(() => {}).finally(() => {
+  recordIdentity(req.headers).catch((error) => {
+    console.error(`identity record failed for upgrade ${req.url}: ${error.message}`);
+  }).finally(() => {
     const upstream = net.connect(targetPort, targetHost, () => {
     upstream.write(`${req.method} ${req.url} HTTP/${req.httpVersion}\r\n`);
     for (const [name, value] of Object.entries(req.headers)) {

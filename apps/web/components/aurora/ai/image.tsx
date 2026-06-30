@@ -161,7 +161,6 @@ const Image = React.forwardRef<HTMLDivElement, AuroraImageProps>(
         <div style={frameStyle}>
           {/* Image (ready only) */}
           {isReady && src ? (
-             
             <img
               src={src}
               alt={alt}

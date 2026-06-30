@@ -14,6 +14,7 @@ on:
       - scripts/incus-web-lib.sh
       - scripts/smoke-image.sh
       - tests/deploy_static_tests.sh
+      - apps/web/**
   pull_request:
     paths:
       - .github/workflows/build-image.yml
@@ -24,11 +25,39 @@ on:
       - scripts/incus-web-lib.sh
       - scripts/smoke-image.sh
       - tests/deploy_static_tests.sh
+      - apps/web/**
 
 permissions:
   contents: write
 
 jobs:
+  web:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - name: Install web dependencies
+        run: npm ci --prefix apps/web
+
+      - name: Lint web app
+        run: npm --prefix apps/web run lint
+
+      - name: Test web app
+        run: npm --prefix apps/web run test
+
+      - name: Build web app
+        run: npm --prefix apps/web run build
+
   build-image:
     runs-on: ubuntu-latest
     timeout-minutes: 90

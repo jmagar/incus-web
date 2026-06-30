@@ -1,5 +1,12 @@
 import type { ActorContext } from "@/lib/workspaces/types";
 
+export class AuthenticationRequiredError extends Error {
+  constructor(message = "authenticated identity headers are required") {
+    super(message);
+    this.name = "AuthenticationRequiredError";
+  }
+}
+
 function firstHeader(headers: Headers, names: string[]): string | undefined {
   for (const name of names) {
     const value = headers.get(name);
@@ -17,7 +24,7 @@ export function getActorFromHeaders(headers: Headers): ActorContext {
       "x-auth-request-email",
       "x-forwarded-email",
       "x-authentik-email",
-    ]) ?? "dev@incus-web.local";
+    ]) ?? devIdentity();
   const displayName =
     firstHeader(headers, [
       "x-auth-request-preferred-username",
@@ -40,4 +47,15 @@ export function getActorFromHeaders(headers: Headers): ActorContext {
     ipAddress: firstHeader(headers, ["x-forwarded-for"]),
     userAgent: firstHeader(headers, ["user-agent"]),
   };
+}
+
+function devIdentity(): string {
+  if (
+    process.env.INCUS_WEB_ALLOW_DEV_AUTH === "1" ||
+    process.env.NODE_ENV !== "production"
+  ) {
+    return "dev@incus-web.local";
+  }
+
+  throw new AuthenticationRequiredError();
 }

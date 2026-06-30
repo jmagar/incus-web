@@ -114,13 +114,23 @@ function WorkspaceCard({ workspace }: { workspace: Workspace }) {
             <Button variant="neutral" iconLeft={<NetworkIcon aria-hidden="true" />}>
               Share
             </Button>
-            <Button
-              asChild
-              variant="aurora"
-              iconLeft={<TerminalIcon aria-hidden="true" />}
-            >
-              <a href={workspace.terminalUrl}>Open terminal</a>
-            </Button>
+            {workspace.terminalUrl ? (
+              <Button
+                asChild
+                variant="aurora"
+                iconLeft={<TerminalIcon aria-hidden="true" />}
+              >
+                <a href={workspace.terminalUrl}>Open terminal</a>
+              </Button>
+            ) : (
+              <Button
+                variant="neutral"
+                disabled
+                iconLeft={<TerminalIcon aria-hidden="true" />}
+              >
+                Terminal pending
+              </Button>
+            )}
           </ToolbarGroup>
         </Toolbar>
       </CardHeader>
@@ -188,6 +198,9 @@ function WorkspaceCard({ workspace }: { workspace: Workspace }) {
                   </span>
                 }
               />
+              {workspace.accessNote ? (
+                <DescriptionItem label="Access" value={workspace.accessNote} />
+              ) : null}
             </DescriptionList>
           </div>
         </div>
@@ -272,9 +285,19 @@ export function WorkspaceDashboard({
         </section>
 
         <section className="grid gap-4">
-          {inventory.workspaces.map((workspace) => (
-            <WorkspaceCard key={workspace.id} workspace={workspace} />
-          ))}
+          {inventory.workspaces.length > 0 ? (
+            inventory.workspaces.map((workspace) => (
+              <WorkspaceCard key={workspace.id} workspace={workspace} />
+            ))
+          ) : (
+            <Card accent="rose" className="p-6">
+              <p className="aurora-text-section">No workspace access</p>
+              <p className="aurora-text-body mt-2 text-[var(--aurora-text-muted)]">
+                This authenticated account is not assigned to the current
+                prototype workspace.
+              </p>
+            </Card>
+          )}
         </section>
       </div>
     </main>

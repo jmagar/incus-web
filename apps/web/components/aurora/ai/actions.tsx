@@ -122,7 +122,6 @@ function ActionsStyle() {
   return (
     <style
       id={STYLE_ID}
-       
       dangerouslySetInnerHTML={{ __html: ACTIONS_CSS }}
     />
   )

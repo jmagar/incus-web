@@ -9,10 +9,71 @@ const host = process.env.HOST || "127.0.0.1";
 const port = Number.parseInt(process.env.PORT || "3080", 10);
 const webUser = process.env.WEB_USER || "agent";
 const skipAptScripts = process.env.DOTFILES_SKIP_APT !== "0";
+const setupAllowedEmails = parseList(process.env.SETUP_ALLOWED_EMAILS || "");
+const allowKeyPersistence = process.env.SETUP_ALLOW_KEY_PERSISTENCE === "1";
+const commandTimeoutMs = Number.parseInt(
+  process.env.SETUP_COMMAND_TIMEOUT_MS || "1200000",
+  10,
+);
 const home = `/home/${webUser}`;
 const keyPath = `${home}/.config/chezmoi/key.txt`;
 const kekPath = "/etc/incus-web/setup-kek";
 const encryptedKeyPath = "/var/lib/incus-web/setup/age-key.json";
+let applyInFlight = false;
+
+function parseList(value) {
+  return new Set(
+    value
+      .split(/[,\s]+/)
+      .map((item) => item.trim().toLowerCase())
+      .filter(Boolean),
+  );
+}
+
+function firstHeader(headers, names) {
+  for (const name of names) {
+    const value = headers[name.toLowerCase()];
+    if (Array.isArray(value) && value[0]) return value[0].trim();
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return "";
+}
+
+function setupActor(req) {
+  const email = firstHeader(req.headers, [
+    "x-auth-request-email",
+    "x-forwarded-email",
+    "x-authentik-email",
+  ]).toLowerCase();
+  const user = firstHeader(req.headers, [
+    "x-auth-request-user",
+    "x-auth-request-preferred-username",
+    "x-forwarded-user",
+  ]);
+  return { email, user };
+}
+
+function authorizeSetup(req) {
+  const actor = setupActor(req);
+  if (!actor.email) {
+    return { ok: false, reason: "missing authenticated email" };
+  }
+  if (setupAllowedEmails.size === 0) {
+    return { ok: false, reason: "SETUP_ALLOWED_EMAILS is empty" };
+  }
+  if (!setupAllowedEmails.has(actor.email)) {
+    return { ok: false, reason: "authenticated user is not allowed to run setup" };
+  }
+  return { ok: true, actor };
+}
+
+function requireSetupAuthorization(req, res) {
+  const auth = authorizeSetup(req);
+  if (auth.ok) return true;
+
+  send(res, 403, { ok: false, error: auth.reason });
+  return false;
+}
 
 function send(res, status, body, type = "application/json") {
   res.writeHead(status, {
@@ -78,6 +139,8 @@ async function readEncryptedKey() {
 
 async function installAgeKey(ageKey) {
   await mkdir(`${home}/.config/chezmoi`, { recursive: true, mode: 0o700 });
+  await run("chown", [`${webUser}:${webUser}`, `${home}/.config/chezmoi`]);
+  await run("chmod", ["700", `${home}/.config/chezmoi`]);
   await writeFile(keyPath, ageKey.endsWith("\n") ? ageKey : `${ageKey}\n`, { mode: 0o600 });
   await run("chown", [`${webUser}:${webUser}`, keyPath]);
   await run("chmod", ["600", keyPath]);
@@ -98,8 +161,21 @@ function run(command, args, options = {}) {
     };
     child.stdout.on("data", append);
     child.stderr.on("data", append);
-    child.on("error", reject);
+    const timeoutMs = options.timeoutMs ?? commandTimeoutMs;
+    const timer = Number.isFinite(timeoutMs) && timeoutMs > 0
+      ? setTimeout(() => {
+          child.kill("SIGTERM");
+          const error = new Error(`${command} timed out after ${timeoutMs}ms`);
+          error.output = output;
+          reject(error);
+        }, timeoutMs)
+      : null;
+    child.on("error", (error) => {
+      if (timer) clearTimeout(timer);
+      reject(error);
+    });
     child.on("close", (code) => {
+      if (timer) clearTimeout(timer);
       if (code === 0) {
         resolve(output);
       } else {
@@ -122,6 +198,7 @@ function agentBash(script, extraEnv = {}) {
     `LOGNAME=${webUser}`,
     "MISE_HTTP_TIMEOUT=180",
     "MISE_FETCH_REMOTE_VERSIONS_TIMEOUT=60",
+    `PATH=${home}/.local/bin:${home}/.local/share/mise/shims:/usr/local/bin:/usr/bin:/bin`,
     ...Object.entries(extraEnv).map(([key, value]) => `${key}=${value}`),
     "bash",
     "-lc",
@@ -140,7 +217,11 @@ async function applyDotfiles({ repo, ageKey, rememberKey }) {
     throw new Error("age key did not look like an age identity file");
   }
 
-  if (!ageKey) {
+  if (rememberKey && !allowKeyPersistence) {
+    throw new Error("age key persistence is disabled for this workspace");
+  }
+
+  if (!ageKey && allowKeyPersistence) {
     ageKey = await readEncryptedKey();
   }
 
@@ -159,12 +240,15 @@ async function applyDotfiles({ repo, ageKey, rememberKey }) {
       DOTFILES_REPO: repo.trim(),
     });
     if (skipAptScripts) {
-      output += await agentBash('mkdir -p "$HOME/.local/share/chezmoi/.disabled-chezmoiscripts" && find "$HOME/.local/share/chezmoi/.chezmoiscripts" -maxdepth 1 -type f -name "*apt-packages*" -exec mv -t "$HOME/.local/share/chezmoi/.disabled-chezmoiscripts" {} + 2>/dev/null || true');
+      output += await agentBash('scripts_dir="$HOME/.local/share/chezmoi/.chezmoiscripts"; disabled_dir="$HOME/.local/share/chezmoi/.disabled-chezmoiscripts"; if [[ -d "$scripts_dir" ]]; then shopt -s nullglob; matches=("$scripts_dir"/*apt-packages*); if (( ${#matches[@]} > 0 )); then mkdir -p "$disabled_dir"; mv "${matches[@]}" "$disabled_dir"/; fi; fi');
     }
     output += await agentBash("chezmoi apply --force --no-tty");
     output += await agentBash("mise install");
   } finally {
     await rm(keyPath, { force: true });
+    if (!allowKeyPersistence || !rememberKey) {
+      await rm(encryptedKeyPath, { force: true });
+    }
   }
   return output;
 }
@@ -196,8 +280,8 @@ const page = `<!doctype html>
       <label for="key">age key file</label>
       <input id="key" name="key" type="file" />
       <div class="row">
-        <input id="remember" name="remember" type="checkbox" />
-        <label for="remember" style="margin:0">Remember encrypted key for future applies</label>
+        <input id="remember" name="remember" type="checkbox" ${allowKeyPersistence ? "" : "disabled"} />
+        <label for="remember" style="margin:0">${allowKeyPersistence ? "Remember encrypted key for future applies" : "Key persistence disabled for this workspace"}</label>
       </div>
       <button type="submit">Apply dotfiles and mise</button>
     </form>
@@ -232,6 +316,7 @@ createServer(async (req, res) => {
   try {
     const url = new URL(req.url || "/", `http://${req.headers.host || "127.0.0.1"}`);
     if ((url.pathname === "/setup" || url.pathname === "/setup/") && req.method === "HEAD") {
+      if (!requireSetupAuthorization(req, res)) return;
       res.writeHead(200, {
         "Content-Type": "text/html; charset=utf-8",
         "Cache-Control": "no-store",
@@ -241,12 +326,23 @@ createServer(async (req, res) => {
       return;
     }
     if ((url.pathname === "/setup" || url.pathname === "/setup/") && req.method === "GET") {
+      if (!requireSetupAuthorization(req, res)) return;
       send(res, 200, page, "text/html; charset=utf-8");
       return;
     }
     if (url.pathname === "/setup/apply" && req.method === "POST") {
-      const result = await applyDotfiles(await readJson(req));
-      send(res, 200, { ok: true, output: result });
+      if (!requireSetupAuthorization(req, res)) return;
+      if (applyInFlight) {
+        send(res, 409, { ok: false, error: "setup is already running" });
+        return;
+      }
+      applyInFlight = true;
+      try {
+        const result = await applyDotfiles(await readJson(req));
+        send(res, 200, { ok: true, output: result });
+      } finally {
+        applyInFlight = false;
+      }
       return;
     }
     send(res, 404, { ok: false, error: "not found" });

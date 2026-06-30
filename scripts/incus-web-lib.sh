@@ -330,6 +330,9 @@ push_oidc_env() {
     printf 'WETTY_PORT=%q\n' "$WETTY_PORT"
     printf 'SETUP_PORT=%q\n' "$SETUP_PORT"
     printf 'SETUP_ENABLED=%q\n' "$SETUP_ENABLED"
+    printf 'SETUP_ALLOWED_EMAILS=%q\n' "$SETUP_ALLOWED_EMAILS"
+    printf 'SETUP_ALLOW_KEY_PERSISTENCE=%q\n' "$SETUP_ALLOW_KEY_PERSISTENCE"
+    printf 'SETUP_COMMAND_TIMEOUT_MS=%q\n' "$SETUP_COMMAND_TIMEOUT_MS"
     printf 'IDENTITY_PROXY_PORT=%q\n' "$IDENTITY_PROXY_PORT"
   } >"$tmp_file"
 
@@ -489,6 +492,9 @@ fi'
   push_identity_proxy "$name"
   push_info_script "$name"
   push_open_script "$name"
+  # The following string is executed inside the container and intentionally
+  # contains nested here-docs and shell snippets for files it generates.
+  # shellcheck disable=SC1078,SC1079,SC1083,SC2027,SC2068,SC2140,SC2145
   container_bash "$name" "set -euo pipefail
 if ! id -u '$WEB_USER' >/dev/null 2>&1; then
   useradd -m -s /usr/bin/zsh '$WEB_USER'
@@ -620,6 +626,7 @@ cat >/etc/default/tailscaled <<'EOF'
 PORT=\"41641\"
 FLAGS=\"--tun=userspace-networking\"
 EOF
+# shellcheck disable=SC2086
 cat >/etc/systemd/system/wetty.service <<EOF
 [Unit]
 Description=WeTTY browser terminal
@@ -629,7 +636,7 @@ Wants=network-online.target
 [Service]
 Environment=HOME=/home/$WEB_USER
 Environment=BROWSER=/usr/local/bin/incus-web-open
-Environment="INCUS_WEB_WORKSPACE_LABEL=$INCUS_WEB_WORKSPACE_LABEL"
+Environment='INCUS_WEB_WORKSPACE_LABEL=$INCUS_WEB_WORKSPACE_LABEL'
 ExecStart=/usr/local/bin/wetty --host 127.0.0.1 --port $WETTY_PORT --base / --command 'runuser -u $WEB_USER -- /usr/bin/zsh -l'
 Restart=always
 RestartSec=2
@@ -650,6 +657,9 @@ Environment=HOST=127.0.0.1
 Environment=PORT=$SETUP_PORT
 Environment=WEB_USER=$WEB_USER
 Environment=DOTFILES_SKIP_APT=$DOTFILES_SKIP_APT
+Environment=SETUP_ALLOWED_EMAILS=$SETUP_ALLOWED_EMAILS
+Environment=SETUP_ALLOW_KEY_PERSISTENCE=$SETUP_ALLOW_KEY_PERSISTENCE
+Environment=SETUP_COMMAND_TIMEOUT_MS=$SETUP_COMMAND_TIMEOUT_MS
 ExecStart=/usr/local/bin/incus-web-bootstrap-server
 Restart=always
 RestartSec=2
@@ -663,6 +673,7 @@ else
   systemctl disable --now incus-web-setup >/dev/null 2>&1 || true
 fi
 if [[ '$TERMINAL_BACKEND' == 'ghostty-web' ]]; then
+  # shellcheck disable=SC2086
   cat >/etc/systemd/system/ghostty-web.service <<EOF
 [Unit]
 Description=Ghostty web terminal
@@ -675,7 +686,7 @@ WorkingDirectory=$CONTAINER_WORKSPACE
 Environment=HOME=/home/$WEB_USER
 Environment=SHELL=/usr/bin/zsh
 Environment=BROWSER=/usr/local/bin/incus-web-open
-Environment="INCUS_WEB_WORKSPACE_LABEL=$INCUS_WEB_WORKSPACE_LABEL"
+Environment='INCUS_WEB_WORKSPACE_LABEL=$INCUS_WEB_WORKSPACE_LABEL'
 Environment=HOST=127.0.0.1
 Environment=PORT=$WETTY_PORT
 Environment=GHOSTTY_ALLOWED_HOSTS=$ghostty_allowed_hosts
@@ -723,7 +734,7 @@ configure_user_bootstrap() {
     incus_cmd exec "$name" -- rm -f /tmp/incus-web-dotfiles-source.tgz
     incus_cmd exec "$name" -- chown -R "$WEB_USER:$WEB_USER" "/home/$WEB_USER/.local/share/chezmoi"
     if [[ "$DOTFILES_SKIP_APT" == "1" ]]; then
-      incus_cmd exec "$name" -- bash -lc "install -d -o '$WEB_USER' -g '$WEB_USER' '/home/$WEB_USER/.local/share/chezmoi/.disabled-chezmoiscripts'; find '/home/$WEB_USER/.local/share/chezmoi/.chezmoiscripts' -maxdepth 1 -type f -name '*apt-packages*' -exec mv -t '/home/$WEB_USER/.local/share/chezmoi/.disabled-chezmoiscripts' {} + 2>/dev/null || true"
+      incus_cmd exec "$name" -- bash -lc "scripts_dir='/home/$WEB_USER/.local/share/chezmoi/.chezmoiscripts'; disabled_dir='/home/$WEB_USER/.local/share/chezmoi/.disabled-chezmoiscripts'; if [[ -d \"\$scripts_dir\" ]]; then shopt -s nullglob; matches=(\"\$scripts_dir\"/*apt-packages*); if (( \${#matches[@]} > 0 )); then install -d -o '$WEB_USER' -g '$WEB_USER' \"\$disabled_dir\"; mv \"\${matches[@]}\" \"\$disabled_dir\"/; fi; fi"
     fi
   fi
 
@@ -738,19 +749,20 @@ configure_user_bootstrap() {
   incus_cmd exec "$name" -- chown -R "$WEB_USER:$WEB_USER" "/home/$WEB_USER/.config" "/home/$WEB_USER/.local" "$CONTAINER_WORKSPACE"
 
   container_bash "$name" "set -euo pipefail
-if [[ '$DOTFILES_RUN_MISE' == '1' ]] && ! runuser -u '$WEB_USER' -- bash -lc 'command -v mise >/dev/null 2>&1'; then
-  runuser -u '$WEB_USER' -- env HOME='/home/$WEB_USER' USER='$WEB_USER' LOGNAME='$WEB_USER' MISE_HTTP_TIMEOUT=180 MISE_FETCH_REMOTE_VERSIONS_TIMEOUT=60 bash -lc 'cd \"\$HOME\" && curl -fsSL https://mise.run | sh'
+agent_env=(env HOME='/home/$WEB_USER' USER='$WEB_USER' LOGNAME='$WEB_USER' PATH='/home/$WEB_USER/.local/bin:/home/$WEB_USER/.local/share/mise/shims:/usr/local/bin:/usr/bin:/bin' MISE_HTTP_TIMEOUT=180 MISE_FETCH_REMOTE_VERSIONS_TIMEOUT=60)
+if [[ '$DOTFILES_RUN_MISE' == '1' ]] && ! runuser -u '$WEB_USER' -- \"\${agent_env[@]}\" bash -lc 'command -v mise >/dev/null 2>&1'; then
+  runuser -u '$WEB_USER' -- \"\${agent_env[@]}\" bash -lc 'cd \"\$HOME\" && curl -fsSL https://mise.run | sh'
 fi
-if [[ -n '$DOTFILES_REPO' || -n '$DOTFILES_SOURCE_DIR' ]] && ! runuser -u '$WEB_USER' -- bash -lc 'command -v chezmoi >/dev/null 2>&1'; then
-  runuser -u '$WEB_USER' -- env HOME='/home/$WEB_USER' USER='$WEB_USER' LOGNAME='$WEB_USER' MISE_HTTP_TIMEOUT=180 MISE_FETCH_REMOTE_VERSIONS_TIMEOUT=60 bash -lc 'cd \"\$HOME\" && sh -c \"\$(curl -fsLS get.chezmoi.io)\" -- -b \"\$HOME/.local/bin\"'
+if [[ -n '$DOTFILES_REPO' || -n '$DOTFILES_SOURCE_DIR' ]] && ! runuser -u '$WEB_USER' -- \"\${agent_env[@]}\" bash -lc 'command -v chezmoi >/dev/null 2>&1'; then
+  runuser -u '$WEB_USER' -- \"\${agent_env[@]}\" bash -lc 'cd \"\$HOME\" && sh -c \"\$(curl -fsLS get.chezmoi.io)\" -- -b \"\$HOME/.local/bin\"'
 fi
 if [[ -n '$DOTFILES_SOURCE_DIR' ]]; then
-  runuser -u '$WEB_USER' -- env HOME='/home/$WEB_USER' USER='$WEB_USER' LOGNAME='$WEB_USER' MISE_HTTP_TIMEOUT=180 MISE_FETCH_REMOTE_VERSIONS_TIMEOUT=60 bash -lc 'cd \"\$HOME\" && chezmoi --source \"\$HOME/.local/share/chezmoi\" init --apply --promptDefaults --force --no-tty'
+  runuser -u '$WEB_USER' -- \"\${agent_env[@]}\" bash -lc 'cd \"\$HOME\" && chezmoi --source \"\$HOME/.local/share/chezmoi\" init --apply --promptDefaults --force --no-tty'
 elif [[ -n '$DOTFILES_REPO' ]]; then
-  runuser -u '$WEB_USER' -- env HOME='/home/$WEB_USER' USER='$WEB_USER' LOGNAME='$WEB_USER' MISE_HTTP_TIMEOUT=180 MISE_FETCH_REMOTE_VERSIONS_TIMEOUT=60 DOTFILES_SKIP_APT='$DOTFILES_SKIP_APT' bash -lc 'cd \"\$HOME\" && chezmoi init --promptDefaults --force --no-tty \"$DOTFILES_REPO\" && if [[ \"\$DOTFILES_SKIP_APT\" == \"1\" ]]; then mkdir -p \"\$HOME/.local/share/chezmoi/.disabled-chezmoiscripts\" && find \"\$HOME/.local/share/chezmoi/.chezmoiscripts\" -maxdepth 1 -type f -name \"*apt-packages*\" -exec mv -t \"\$HOME/.local/share/chezmoi/.disabled-chezmoiscripts\" {} + 2>/dev/null || true; fi && chezmoi apply --force --no-tty'
+  runuser -u '$WEB_USER' -- \"\${agent_env[@]}\" DOTFILES_SKIP_APT='$DOTFILES_SKIP_APT' bash -lc 'cd \"\$HOME\" && chezmoi init --promptDefaults --force --no-tty \"$DOTFILES_REPO\" && if [[ \"\$DOTFILES_SKIP_APT\" == \"1\" ]]; then scripts_dir=\"\$HOME/.local/share/chezmoi/.chezmoiscripts\"; disabled_dir=\"\$HOME/.local/share/chezmoi/.disabled-chezmoiscripts\"; if [[ -d \"\$scripts_dir\" ]]; then shopt -s nullglob; matches=(\"\$scripts_dir\"/*apt-packages*); if (( \${#matches[@]} > 0 )); then mkdir -p \"\$disabled_dir\"; mv \"\${matches[@]}\" \"\$disabled_dir\"/; fi; fi; fi && chezmoi apply --force --no-tty'
 fi
 if [[ '$DOTFILES_RUN_MISE' == '1' ]]; then
-  runuser -u '$WEB_USER' -- env HOME='/home/$WEB_USER' USER='$WEB_USER' LOGNAME='$WEB_USER' MISE_HTTP_TIMEOUT=180 MISE_FETCH_REMOTE_VERSIONS_TIMEOUT=60 bash -lc 'cd \"\$HOME\" && mise install'
+  runuser -u '$WEB_USER' -- \"\${agent_env[@]}\" bash -lc 'cd \"\$HOME\" && mise install'
 fi
 if [[ -n '$DOTFILES_AGE_KEY_FILE' ]]; then
   rm -f '/home/$WEB_USER/.config/chezmoi/key.txt'
