@@ -98,6 +98,10 @@ jobs:
         env:
           EXPORT_DIR: ${{ github.workspace }}/dist
           IMAGE_ALIAS: incus-web-agent
+          # GitHub-hosted runners do not expose the idmapping support required
+          # for shifted Incus disk mounts. Keep shifted mounts as the runtime
+          # default, but use an unshifted disposable workspace for CI smoke.
+          DISK_SHIFT: "false"
 
       - name: Upload Incus image artifact
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
