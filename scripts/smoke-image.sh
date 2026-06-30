@@ -11,6 +11,11 @@ EXPORT_DIR="${EXPORT_DIR:-$ROOT/dist}"
 EXPORT_NAME="${EXPORT_NAME:-$IMAGE_ALIAS}"
 SMOKE_IMAGE_ALIAS="${SMOKE_IMAGE_ALIAS:-$IMAGE_ALIAS-smoke}"
 SMOKE_CONTAINER_NAME="${SMOKE_CONTAINER_NAME:-incus-web-image-smoke}"
+SMOKE_KEEP_CONTAINER="${SMOKE_KEEP_CONTAINER:-0}"
+SMOKE_TIMEOUT="${SMOKE_TIMEOUT:-180}"
+SMOKE_LIMIT_CPU="${SMOKE_LIMIT_CPU:-2}"
+SMOKE_LIMIT_MEMORY="${SMOKE_LIMIT_MEMORY:-4GiB}"
+SMOKE_LIMIT_PROCESSES="${SMOKE_LIMIT_PROCESSES:-2048}"
 INCUS_NETWORK="${INCUS_NETWORK:-agentbr0}"
 INCUS_NETWORK_IPV4="${INCUS_NETWORK_IPV4:-198.18.0.1/15}"
 INCUS_ACL="${INCUS_ACL:-agent-block-lan}"
@@ -26,6 +31,37 @@ DISK_SHIFT="${DISK_SHIFT:-true}"
 image_tar="$EXPORT_DIR/$EXPORT_NAME.tar.xz"
 
 [[ -f "$image_tar" ]] || die "missing exported image tarball: $image_tar"
+
+cleanup_smoke_container() {
+  if [[ "$SMOKE_KEEP_CONTAINER" == "1" ]]; then
+    log "keeping smoke container $SMOKE_CONTAINER_NAME for inspection"
+    return
+  fi
+
+  log "cleaning up smoke container $SMOKE_CONTAINER_NAME"
+  incus_cmd stop "$SMOKE_CONTAINER_NAME" --force >/dev/null 2>&1 || true
+  incus_cmd delete "$SMOKE_CONTAINER_NAME" --force >/dev/null 2>&1 || true
+
+  for _ in {1..10}; do
+    if ! incus_cmd info "$SMOKE_CONTAINER_NAME" >/dev/null 2>&1; then
+      return
+    fi
+    sleep 1
+  done
+
+  log "warning: smoke container $SMOKE_CONTAINER_NAME still exists after cleanup"
+}
+
+timeout_container_bash() {
+  local name="$1"
+  shift
+
+  if [[ "$INCUS_USE_SUDO" == "1" ]]; then
+    timeout "$SMOKE_TIMEOUT" sudo incus exec "$name" -- bash -lc "$*"
+  else
+    timeout "$SMOKE_TIMEOUT" incus exec "$name" -- bash -lc "$*"
+  fi
+}
 
 install_incus_if_needed
 ensure_incus_ready
@@ -45,13 +81,18 @@ log "launching smoke container $SMOKE_CONTAINER_NAME"
 incus_cmd init "$SMOKE_IMAGE_ALIAS" "$SMOKE_CONTAINER_NAME" \
   --profile default \
   --profile "$INCUS_PROFILE_NAME"
+incus_cmd config set "$SMOKE_CONTAINER_NAME" limits.cpu "$SMOKE_LIMIT_CPU"
+incus_cmd config set "$SMOKE_CONTAINER_NAME" limits.memory "$SMOKE_LIMIT_MEMORY"
+incus_cmd config set "$SMOKE_CONTAINER_NAME" limits.memory.enforce hard
+incus_cmd config set "$SMOKE_CONTAINER_NAME" limits.processes "$SMOKE_LIMIT_PROCESSES"
 incus_cmd config device override "$SMOKE_CONTAINER_NAME" eth0 network="$INCUS_NETWORK"
 incus_cmd config device override "$SMOKE_CONTAINER_NAME" workspace source="$HOST_WORKSPACE" path="$CONTAINER_WORKSPACE" shift="$DISK_SHIFT"
+trap cleanup_smoke_container EXIT
 incus_cmd start "$SMOKE_CONTAINER_NAME"
 wait_for_running "$SMOKE_CONTAINER_NAME"
 
 log "checking distrobuilder image toolchain"
-container_bash "$SMOKE_CONTAINER_NAME" "set -euo pipefail
+timeout_container_bash "$SMOKE_CONTAINER_NAME" "set -euo pipefail
 node --version
 npm --version
 python3 --version
