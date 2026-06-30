@@ -209,7 +209,7 @@ actions:
       chown agent:agent /home/agent/.bashrc
 
       if ! runuser -u agent -- bash -lc 'command -v codex >/dev/null 2>&1'; then
-        runuser -u agent -- bash -lc 'cd "$HOME" && curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh'
+        npm install -g @openai/codex
       fi
 
       systemctl enable wetty.service

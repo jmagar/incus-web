@@ -619,7 +619,7 @@ fi
 EOF
 fi
 if ! runuser -u '$WEB_USER' -- bash -lc 'command -v codex >/dev/null 2>&1'; then
-  runuser -u '$WEB_USER' -- bash -lc 'cd \"\$HOME\" && curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh'
+  npm install -g @openai/codex
 fi
 install -d -m 755 /etc/default
 cat >/etc/default/tailscaled <<'EOF'

@@ -196,7 +196,7 @@ for needle in \
   "@ghostty-web/demo@0.4.0-next.20.g1858a59" \
   "ghostty-web-demo" \
   "tailscale.com/install.sh" \
-  "chatgpt.com/codex/install.sh" \
+  "npm install -g @openai/codex" \
   "systemctl enable wetty.service" \
   "systemctl enable tailscaled.service"; do
   if ! grep -Fq -- "$needle" "$definition"; then
