@@ -189,10 +189,25 @@ export async function getWorkspaceInventory(
     });
   }
 
-  return {
-    actor,
-    workspaces: [statusToWorkspace(validated.value.result, owner.userId)],
-  };
+  try {
+    return {
+      actor,
+      workspaces: [statusToWorkspace(validated.value.result, owner.userId)],
+    };
+  } catch (error) {
+    return inventoryFailure(
+      actor,
+      workspace.id,
+      validated.value.requestId,
+      {
+        code: "invalid_input",
+        message:
+          error instanceof Error ? error.message : "invalid workspace dashboard config",
+        retryable: false,
+      },
+      validated.value.id,
+    );
+  }
 }
 
 function failedProvisionerClient(

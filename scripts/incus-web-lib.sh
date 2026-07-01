@@ -454,10 +454,30 @@ ensure_host_node() {
 
   log "installing host node runtime for provisioner and web app"
   sudo_cmd apt-get update
-  sudo_cmd apt-get install -y nodejs npm
+  if [[ "$ENABLE_HOST_WEB_APP" == "1" ]]; then
+    sudo_cmd apt-get install -y nodejs npm
+  else
+    sudo_cmd apt-get install -y nodejs
+  fi
   [[ -x "$INCUS_WEB_PROVISIONER_NODE" ]] || die "nodejs installed but $INCUS_WEB_PROVISIONER_NODE is not executable"
   if [[ "$ENABLE_HOST_WEB_APP" == "1" ]]; then
     [[ -x "$INCUS_WEB_APP_NPM" ]] || die "npm installed but $INCUS_WEB_APP_NPM is not executable"
+    validate_host_node_version
+  fi
+}
+
+validate_host_node_version() {
+  local version
+  local major
+  local minor
+
+  version="$("$INCUS_WEB_PROVISIONER_NODE" --version 2>/dev/null | sed 's/^v//')"
+  major="${version%%.*}"
+  minor="${version#*.}"
+  minor="${minor%%.*}"
+  [[ "$major" =~ ^[0-9]+$ && "$minor" =~ ^[0-9]+$ ]] || die "failed to parse host Node.js version from $INCUS_WEB_PROVISIONER_NODE --version"
+  if (( major < 20 || (major == 20 && minor < 9) )); then
+    die "host web app requires Node.js >=20.9.0 for Next.js 16; $INCUS_WEB_PROVISIONER_NODE is v$version"
   fi
 }
 
@@ -534,6 +554,22 @@ validate_systemd_env_value() {
   [[ -n "$value" ]] || die "$name must not be empty"
   [[ "$value" != *$'\n'* && "$value" != *$'\r'* ]] || die "$name must not contain newlines"
   [[ "$value" =~ ^[A-Za-z0-9_@%+=:,./-]+$ ]] || die "$name contains unsupported characters for systemd EnvironmentFile"
+}
+
+validate_port_value() {
+  local name="$1"
+  local value="$2"
+
+  [[ "$value" =~ ^[0-9]+$ ]] || die "$name must be a numeric TCP port"
+  (( value >= 1 && value <= 65535 )) || die "$name must be between 1 and 65535"
+}
+
+validate_env_file_value() {
+  local name="$1"
+  local value="$2"
+
+  [[ -n "$value" ]] || die "$name must not be empty"
+  [[ "$value" != *$'\n'* && "$value" != *$'\r'* ]] || die "$name must not contain newlines"
 }
 
 ensure_host_provisioner_systemd() {
@@ -668,14 +704,34 @@ host_web_app_source_stamp() {
   )
 }
 
+install_host_web_app_runtime() {
+  local runtime_paths=(package.json package-lock.json .next node_modules)
+
+  if [[ -d "$INCUS_WEB_APP_DIR/public" ]]; then
+    runtime_paths+=(public)
+  fi
+
+  sudo_cmd rm -rf /opt/incus-web-app
+  sudo_cmd install -d -m 755 /opt/incus-web-app
+  (
+    cd "$INCUS_WEB_APP_DIR"
+    tar -cf - "${runtime_paths[@]}"
+  ) | sudo_cmd tar -xf - -C /opt/incus-web-app
+  sudo_cmd chown -R root:root /opt/incus-web-app
+  sudo_cmd install -d -m 750 -o "$INCUS_WEB_APP_USER" -g "$INCUS_WEB_PROVISIONER_GROUP" /opt/incus-web-app/.next/cache
+}
+
 write_host_web_app_env() {
   local tmp_file
 
   validate_systemd_env_value INCUS_WEB_APP_HOST "$INCUS_WEB_APP_HOST"
-  validate_systemd_env_value INCUS_WEB_APP_PORT "$INCUS_WEB_APP_PORT"
+  validate_port_value INCUS_WEB_APP_PORT "$INCUS_WEB_APP_PORT"
   validate_systemd_env_value INCUS_WEB_WORKSPACE_OWNER_MODE "$INCUS_WEB_WORKSPACE_OWNER_MODE"
   if [[ -n "$INCUS_WEB_TERMINAL_URL" ]]; then
-    validate_systemd_env_value INCUS_WEB_TERMINAL_URL "$INCUS_WEB_TERMINAL_URL"
+    validate_env_file_value INCUS_WEB_TERMINAL_URL "$INCUS_WEB_TERMINAL_URL"
+  fi
+  if [[ -n "${INCUS_WEB_TRUSTED_PROXY_SECRET:-}" ]]; then
+    validate_env_file_value INCUS_WEB_TRUSTED_PROXY_SECRET "$INCUS_WEB_TRUSTED_PROXY_SECRET"
   fi
 
   tmp_file="$(mktemp)"
@@ -690,11 +746,32 @@ write_host_web_app_env() {
     if [[ -n "$INCUS_WEB_TERMINAL_URL" ]]; then
       printf 'INCUS_WEB_TERMINAL_URL=%s\n' "$INCUS_WEB_TERMINAL_URL"
     fi
+    if [[ -n "${INCUS_WEB_TRUSTED_PROXY_SECRET:-}" ]]; then
+      printf 'INCUS_WEB_TRUSTED_PROXY_SECRET=%s\n' "$INCUS_WEB_TRUSTED_PROXY_SECRET"
+    fi
   } >"$tmp_file"
 
   sudo_cmd install -d -m 750 -g "$INCUS_WEB_PROVISIONER_GROUP" "$(dirname "$INCUS_WEB_APP_ENV_FILE")"
   sudo_cmd install -m 640 -g "$INCUS_WEB_PROVISIONER_GROUP" "$tmp_file" "$INCUS_WEB_APP_ENV_FILE"
   rm -f "$tmp_file"
+}
+
+wait_for_host_web_app() {
+  local url="http://$INCUS_WEB_APP_HOST:$INCUS_WEB_APP_PORT/healthz"
+  local curl_args=(-fsS --max-time 2)
+
+  if [[ -n "${INCUS_WEB_TRUSTED_PROXY_SECRET:-}" ]]; then
+    curl_args+=(-H "X-Incus-Web-Proxy-Secret: $INCUS_WEB_TRUSTED_PROXY_SECRET")
+  fi
+  for _ in {1..30}; do
+    if sudo_cmd systemctl is-active --quiet incus-web-app && curl "${curl_args[@]}" "$url" >/dev/null 2>&1; then
+      return
+    fi
+    sleep 1
+  done
+
+  sudo_cmd journalctl -u incus-web-app -n 80 --no-pager >&2 || true
+  die "host web app did not become healthy at $url"
 }
 
 configure_host_web_app() {
@@ -728,7 +805,7 @@ configure_host_web_app() {
     printf '%s\n' "$source_stamp" >"$stamp_file"
   fi
   write_host_web_app_env
-  sudo_cmd install -d -m 755 /opt/incus-web-app
+  install_host_web_app_runtime
 
   tmp_unit="$(mktemp)"
   cat >"$tmp_unit" <<EOF
@@ -748,7 +825,6 @@ EnvironmentFile=$INCUS_WEB_APP_ENV_FILE
 ExecStart=$INCUS_WEB_APP_NPM run start -- --hostname \$INCUS_WEB_APP_HOST --port \$INCUS_WEB_APP_PORT
 Restart=always
 RestartSec=2
-BindReadOnlyPaths=$INCUS_WEB_APP_DIR:/opt/incus-web-app
 StateDirectory=incus-web-app
 CacheDirectory=incus-web-app
 UMask=0077
@@ -756,6 +832,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=read-only
 ProtectSystem=full
+ReadWritePaths=/opt/incus-web-app/.next/cache
 RestrictSUIDSGID=true
 LockPersonality=true
 
@@ -768,6 +845,7 @@ EOF
   sudo_cmd systemctl daemon-reload
   sudo_cmd systemctl enable incus-web-app
   sudo_cmd systemctl restart incus-web-app
+  wait_for_host_web_app
   log "host web app: incus-web-app on $INCUS_WEB_APP_HOST:$INCUS_WEB_APP_PORT"
 }
 
