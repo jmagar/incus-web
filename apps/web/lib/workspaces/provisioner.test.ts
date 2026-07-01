@@ -13,6 +13,7 @@ describe("workspace inventory provisioner", () => {
     delete process.env.INCUS_WEB_WORKSPACE_OWNER_EMAIL;
     delete process.env.INCUS_WEB_WORKSPACE_OWNER_SUBJECT;
     delete process.env.INCUS_WEB_ALLOW_DEV_AUTH;
+    delete process.env.INCUS_WEB_PROVISIONER_MODE;
     vi.unstubAllEnvs();
   });
 
@@ -55,6 +56,7 @@ describe("workspace inventory provisioner", () => {
 
   it("returns the current incus-web workspace read-only inventory", async () => {
     process.env.INCUS_WEB_WORKSPACE_OWNER_EMAIL = "owner@example.com";
+    process.env.INCUS_WEB_PROVISIONER_MODE = "prototype-static";
     const actor = getActorFromHeaders(
       new Headers({
         "x-auth-request-email": "owner@example.com",
@@ -83,6 +85,7 @@ describe("workspace inventory provisioner", () => {
 
   it("matches a configured owner subject when present", async () => {
     process.env.INCUS_WEB_WORKSPACE_OWNER_SUBJECT = "authelia-user-id";
+    process.env.INCUS_WEB_PROVISIONER_MODE = "prototype-static";
     const actor = getActorFromHeaders(
       new Headers({
         "x-auth-request-email": "owner@example.com",

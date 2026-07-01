@@ -122,6 +122,9 @@ export type CreateWorkspacePayload = {
   autoStart: boolean;
 };
 
+export type StartWorkspacePayload = Record<string, never>;
+export type GetWorkspaceStatusPayload = Record<string, never>;
+
 export type StopWorkspacePayload = {
   force: boolean;
   timeoutSeconds: number;
@@ -142,6 +145,26 @@ export type RunSetupPayload = {
 
 export type SetupValidationPolicy = {
   allowAgeKeyPersistence?: boolean;
+};
+
+export type CreateWorkspaceResult = {
+  workspaceId: WorkspaceId;
+  incusProject: IncusProjectName;
+  incusContainer: IncusContainerName;
+  state: "stopped" | "running";
+  templateVersion: string;
+  resourceProfileId: ResourceProfileId;
+};
+
+export type LifecycleWorkspaceResult = {
+  workspaceId: WorkspaceId;
+  state: "running" | "stopped";
+  status?: WorkspaceRuntimeStatus;
+};
+
+export type RunSetupResult = {
+  workspaceId: WorkspaceId;
+  setup: Record<string, unknown>;
 };
 
 export function isProvisionerCommandType(
@@ -186,11 +209,9 @@ export function validateProvisionerCommand(
   if (!isWorkspaceRef(command.workspace)) {
     return invalid("workspace ref is invalid");
   }
-  if (command.type === "RunSetup") {
-    const payload = validateSetupPayload(command.payload);
-    if (!payload.ok) {
-      return payload;
-    }
+  const payload = validateCommandPayload(command.type, command.payload);
+  if (!payload.ok) {
+    return payload;
   }
   return { ok: true, value: command as ProvisionerCommand<unknown> };
 }
@@ -201,6 +222,9 @@ export function validateSetupPayload(
 ): ValidationResult<RunSetupPayload> {
   if (!isRecord(payload)) {
     return invalid("setup payload must be an object");
+  }
+  if (!hasOnlyKeys(payload, ["dotfilesRepo", "ageKey", "skipAptScripts"])) {
+    return invalid("setup payload contains unsupported fields");
   }
   if (typeof payload.skipAptScripts !== "boolean") {
     return invalid("skipAptScripts must be a boolean");
@@ -282,9 +306,9 @@ export function validateProvisionerOperation<TResult>(
     return invalid("operation status is invalid");
   }
   if (operation.status === "succeeded" && operation.result !== undefined) {
-    const status = validateWorkspaceRuntimeStatus(operation.result, workspace);
-    if (!status.ok) {
-      return status;
+    const result = validateOperationResult(type, operation.result, workspace);
+    if (!result.ok) {
+      return result;
     }
   }
   return { ok: true, value: operation as ProvisionerOperation<TResult> };
@@ -329,7 +353,11 @@ export function redactProvisionerOperation<TResult>(
 }
 
 export function redactSetupExcerpt(value: string): string {
-  return value
+  const truncated =
+    value.length > MAX_REDACTED_STRING_LENGTH
+      ? `${value.slice(0, MAX_REDACTED_STRING_LENGTH)}[TRUNCATED]`
+      : value;
+  return truncated
     .replace(/AGE-SECRET-KEY-[A-Z0-9-]+/gi, "[REDACTED_AGE_KEY]")
     .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, "[REDACTED_TOKEN]")
     .replace(
@@ -337,6 +365,10 @@ export function redactSetupExcerpt(value: string): string {
       "[REDACTED_PATH]",
     );
 }
+
+const MAX_REDACTED_STRING_LENGTH = 4096;
+const MAX_REDACTION_DEPTH = 4;
+const MAX_REDACTION_ENTRIES = 32;
 
 function isActor(value: unknown): value is ProvisionerActor {
   return (
@@ -363,6 +395,174 @@ function isWorkspaceRef(value: unknown): value is ProvisionerWorkspaceRef {
     typeof value.incusContainer === "string" &&
     validateGeneratedName(value.incusContainer, "ws")
   );
+}
+
+function validateCommandPayload(
+  type: ProvisionerCommandType,
+  payload: unknown,
+): ValidationResult<unknown> {
+  switch (type) {
+    case "CreateWorkspace":
+      return validateCreateWorkspacePayload(payload);
+    case "StartWorkspace":
+    case "GetWorkspaceStatus":
+      return validateEmptyPayload(payload);
+    case "StopWorkspace":
+      return validateStopWorkspacePayload(payload);
+    case "RestartWorkspace":
+      return validateRestartWorkspacePayload(payload);
+    case "RunSetup":
+      return validateSetupPayload(payload);
+  }
+}
+
+function validateCreateWorkspacePayload(
+  payload: unknown,
+): ValidationResult<CreateWorkspacePayload> {
+  if (!isRecord(payload)) {
+    return invalid("CreateWorkspace payload must be an object");
+  }
+  if (!hasOnlyKeys(payload, ["templateVersion", "resourceProfileId", "autoStart"])) {
+    return invalid("CreateWorkspace payload contains unsupported fields");
+  }
+  if (
+    typeof payload.templateVersion !== "string" ||
+    payload.templateVersion.length === 0 ||
+    typeof payload.autoStart !== "boolean" ||
+    payload.resourceProfileId !== "local-dev"
+  ) {
+    return invalid("CreateWorkspace payload is invalid");
+  }
+  return { ok: true, value: payload as CreateWorkspacePayload };
+}
+
+function validateStopWorkspacePayload(
+  payload: unknown,
+): ValidationResult<StopWorkspacePayload> {
+  if (!isRecord(payload)) {
+    return invalid("StopWorkspace payload must be an object");
+  }
+  if (!hasOnlyKeys(payload, ["force", "timeoutSeconds"])) {
+    return invalid("StopWorkspace payload contains unsupported fields");
+  }
+  if (
+    typeof payload.force !== "boolean" ||
+    !isPositiveTimeout(payload.timeoutSeconds)
+  ) {
+    return invalid("StopWorkspace payload is invalid");
+  }
+  return { ok: true, value: payload as StopWorkspacePayload };
+}
+
+function validateRestartWorkspacePayload(
+  payload: unknown,
+): ValidationResult<RestartWorkspacePayload> {
+  if (!isRecord(payload)) {
+    return invalid("RestartWorkspace payload must be an object");
+  }
+  if (!hasOnlyKeys(payload, ["timeoutSeconds"])) {
+    return invalid("RestartWorkspace payload contains unsupported fields");
+  }
+  if (!isPositiveTimeout(payload.timeoutSeconds)) {
+    return invalid("RestartWorkspace payload is invalid");
+  }
+  return { ok: true, value: payload as RestartWorkspacePayload };
+}
+
+function validateEmptyPayload(
+  payload: unknown,
+): ValidationResult<StartWorkspacePayload | GetWorkspaceStatusPayload> {
+  if (!isRecord(payload)) {
+    return invalid("payload must be an object");
+  }
+  if (!hasOnlyKeys(payload, [])) {
+    return invalid("payload contains unsupported fields");
+  }
+  return { ok: true, value: {} };
+}
+
+function validateOperationResult(
+  type: ProvisionerCommandType,
+  result: unknown,
+  workspace: ProvisionerWorkspaceRef,
+): ValidationResult<unknown> {
+  switch (type) {
+    case "GetWorkspaceStatus":
+      return validateWorkspaceRuntimeStatus(result, workspace);
+    case "CreateWorkspace":
+      return validateCreateWorkspaceResult(result, workspace);
+    case "StartWorkspace":
+    case "RestartWorkspace":
+      return validateLifecycleWorkspaceResult(result, workspace, "running");
+    case "StopWorkspace":
+      return validateLifecycleWorkspaceResult(result, workspace, "stopped");
+    case "RunSetup":
+      return validateRunSetupResult(result, workspace);
+  }
+}
+
+function validateCreateWorkspaceResult(
+  result: unknown,
+  workspace: ProvisionerWorkspaceRef,
+): ValidationResult<CreateWorkspaceResult> {
+  if (!isRecord(result)) {
+    return invalid("CreateWorkspace result must be an object");
+  }
+  if (
+    result.workspaceId !== workspace.id ||
+    result.incusProject !== workspace.incusProject ||
+    result.incusContainer !== workspace.incusContainer
+  ) {
+    return metadataMismatch("CreateWorkspace result tuple did not match request");
+  }
+  if (
+    (result.state !== "stopped" && result.state !== "running") ||
+    typeof result.templateVersion !== "string" ||
+    result.templateVersion.length === 0 ||
+    result.resourceProfileId !== "local-dev"
+  ) {
+    return invalid("CreateWorkspace result is invalid");
+  }
+  return { ok: true, value: result as CreateWorkspaceResult };
+}
+
+function validateLifecycleWorkspaceResult(
+  result: unknown,
+  workspace: ProvisionerWorkspaceRef,
+  state: "running" | "stopped",
+): ValidationResult<LifecycleWorkspaceResult> {
+  if (!isRecord(result)) {
+    return invalid("lifecycle result must be an object");
+  }
+  if (result.workspaceId !== workspace.id) {
+    return metadataMismatch("lifecycle result workspace did not match request");
+  }
+  if (result.state !== state) {
+    return invalid("lifecycle result state is invalid");
+  }
+  if (result.status !== undefined) {
+    const status = validateWorkspaceRuntimeStatus(result.status, workspace);
+    if (!status.ok) {
+      return status;
+    }
+  }
+  return { ok: true, value: result as LifecycleWorkspaceResult };
+}
+
+function validateRunSetupResult(
+  result: unknown,
+  workspace: ProvisionerWorkspaceRef,
+): ValidationResult<RunSetupResult> {
+  if (!isRecord(result)) {
+    return invalid("RunSetup result must be an object");
+  }
+  if (result.workspaceId !== workspace.id) {
+    return metadataMismatch("RunSetup result workspace did not match request");
+  }
+  if (!isRecord(result.setup)) {
+    return invalid("RunSetup setup summary is invalid");
+  }
+  return { ok: true, value: result as RunSetupResult };
 }
 
 function isAllowedGitRepo(value: string): boolean {
@@ -421,26 +621,48 @@ function isOperationStatus(value: unknown): value is OperationStatus {
 function sanitizeDetails(
   details: Record<string, unknown>,
 ): Record<string, unknown> {
-  return Object.fromEntries(
-    Object.entries(details).map(([key, value]) => [key, sanitizeValue(value)]),
-  );
+  return sanitizeRecord(details, 0);
 }
 
-function sanitizeValue(value: unknown): unknown {
+function sanitizeValue(value: unknown, depth = 0): unknown {
   if (typeof value === "string") {
     return redactSetupExcerpt(value);
   }
+  if (depth >= MAX_REDACTION_DEPTH) {
+    return "[REDACTED_DEPTH_LIMIT]";
+  }
   if (Array.isArray(value)) {
-    return value.map(sanitizeValue);
+    return value
+      .slice(0, MAX_REDACTION_ENTRIES)
+      .map((entry) => sanitizeValue(entry, depth + 1));
   }
   if (isRecord(value)) {
-    return sanitizeDetails(value);
+    return sanitizeRecord(value, depth + 1);
   }
   return value;
 }
 
+function sanitizeRecord(
+  value: Record<string, unknown>,
+  depth: number,
+): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(value)
+      .slice(0, MAX_REDACTION_ENTRIES)
+      .map(([key, entry]) => [key, sanitizeValue(entry, depth)]),
+  );
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function hasOnlyKeys(value: Record<string, unknown>, keys: string[]): boolean {
+  return Object.keys(value).every((key) => keys.includes(key));
+}
+
+function isPositiveTimeout(value: unknown): boolean {
+  return typeof value === "number" && Number.isInteger(value) && value > 0 && value <= 1200;
 }
 
 function metadataMismatch(message: string): ValidationResult<never> {

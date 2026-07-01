@@ -469,8 +469,6 @@ The true host provisioner implementation can wrap existing shell helpers:
 
 This compatibility is an implementation detail. The web app consumes only this contract. Static prototype status mode must be explicitly configured and must not be treated as a real host-local provisioner.
 
-## Acceptance Criteria
-
 ## Implementation Entry Points
 
 The first TypeScript implementation lives in:
@@ -480,6 +478,8 @@ The first TypeScript implementation lives in:
 - `apps/web/lib/provisioner/status-adapter.ts` for mapping v1 status into workspace dashboard data
 
 Future host transports must preserve these interfaces so the Next.js workspace inventory does not learn raw Incus details.
+
+## Acceptance Criteria
 
 - A developer can implement Zod schemas directly from this document.
 - The first implementation slice can be planned without consulting raw Incus docs.

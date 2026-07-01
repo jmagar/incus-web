@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
 import {
   buildPrototypeWorkspaceRef,
@@ -7,6 +7,12 @@ import {
 } from "@/lib/provisioner/status-adapter";
 
 describe("provisioner status adapter", () => {
+  afterEach(() => {
+    delete process.env.INCUS_WEB_PROTOTYPE_CPU;
+    delete process.env.INCUS_WEB_PROTOTYPE_MEMORY_BYTES;
+    delete process.env.INCUS_WEB_PROTOTYPE_DISK_BYTES;
+  });
+
   it("builds generated prototype workspace refs", () => {
     expect(buildPrototypeWorkspaceRef("oidc:owner@example.com")).toMatchObject({
       id: "workspace-incus-web",
@@ -17,6 +23,10 @@ describe("provisioner status adapter", () => {
   });
 
   it("creates prototype runtime status from environment defaults", () => {
+    delete process.env.INCUS_WEB_PROTOTYPE_CPU;
+    delete process.env.INCUS_WEB_PROTOTYPE_MEMORY_BYTES;
+    delete process.env.INCUS_WEB_PROTOTYPE_DISK_BYTES;
+
     const status = prototypeRuntimeStatus("workspace-incus-web");
 
     expect(status).toMatchObject({

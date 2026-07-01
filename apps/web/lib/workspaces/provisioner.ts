@@ -52,10 +52,7 @@ function actorMatchesOwner(actor: ActorContext, owner: ConfiguredOwner) {
 
 function defaultProvisionerClient(ownerUserId: string): ProvisionerClient {
   const workspace = buildPrototypeWorkspaceRef(ownerUserId);
-  if (
-    process.env.INCUS_WEB_PROVISIONER_MODE === "prototype-static" ||
-    process.env.NODE_ENV !== "production"
-  ) {
+  if (process.env.INCUS_WEB_PROVISIONER_MODE === "prototype-static") {
     return createStaticPrototypeStatusClient(prototypeRuntimeStatus(workspace.id));
   }
 
