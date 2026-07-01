@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build the Next.js-side provisioner contract/client boundary so the workspace inventory consumes a constrained `provisioner.v1` facade instead of hardcoded runtime constants. This is a contract-prep PR, not the privileged host daemon PR.
+**Goal:** Build the Next.js-side provisioner contract/client boundary so the workspace inventory consumes a constrained `provisioner.v1` facade instead of hardcoded runtime constants. This is a contract-prep PR, not the host-local provisioner service PR.
 
 **Architecture:** Add focused TypeScript contract schemas under `apps/web/lib/provisioner`, then build a local client with a mockable transport and a static prototype status adapter for the current single-container prototype. Wire workspace inventory through `GetWorkspaceStatus` while preserving owner-gated prototype behavior and fail-closed auth posture. The future host-local transport must replace this adapter without changing workspace inventory callers.
 
@@ -1711,7 +1711,7 @@ Future host transports must preserve these interfaces so the Next.js workspace i
 In `docs/superpowers/specs/2026-07-01-provisioner-boundary-v1-design.md`, add this after `## Implementation Slice`:
 
 ```md
-Implementation starts with an in-process/mock provisioner client and prototype status adapter. This intentionally proves the contract and call boundary before adding a privileged host daemon. The next slice can replace the mock transport with a Unix-socket or localhost provisioner service without changing workspace inventory callers.
+Implementation starts with the Next.js-side provisioner client facade and explicit static prototype status adapter. This intentionally proves the contract and call boundary before adding the host-local provisioner transport. The next slice can replace the static adapter with a Unix-socket or localhost provisioner service without changing workspace inventory callers.
 ```
 
 - [ ] **Step 3: Run focused tests**
@@ -1838,7 +1838,7 @@ Spec coverage:
 
 Scope decision:
 
-- This plan intentionally does not build the privileged host daemon, host-local transport, terminal routing, durable database, org sharing, snapshots, or a queue worker. Those are separate follow-up slices after the TypeScript contract and inventory call boundary are proven.
+- This plan intentionally does not build the host-local provisioner service, host-local transport, terminal routing, durable database, org sharing, snapshots, or a queue worker. Those are separate follow-up slices after the TypeScript contract and inventory call boundary are proven.
 - Static prototype mode is an explicit compatibility adapter, not a host security boundary.
 
 Placeholder scan:

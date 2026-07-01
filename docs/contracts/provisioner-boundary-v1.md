@@ -348,8 +348,17 @@ type RunSetupPayload = {
 
 type SetupCheckStatus = "ok" | "warn" | "missing" | "unknown"
 
+type ProvisionerSetupPhase =
+  | "not_configured"
+  | "queued"
+  | "installing_mise"
+  | "applying_dotfiles"
+  | "checking_tools"
+  | "ready"
+  | "failed"
+
 type SetupSummary = {
-  phase: "not_configured" | "setting_up" | "ready" | "failed"
+  phase: ProvisionerSetupPhase
   dotfilesRepo?: string
   dotfilesStatus: SetupCheckStatus
   miseStatus: SetupCheckStatus

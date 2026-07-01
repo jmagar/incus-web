@@ -34,6 +34,28 @@ const baseCommand: ProvisionerCommand<Record<string, never>> = {
   payload: {},
 };
 
+const matchingRuntimeStatus = {
+  workspaceId: "workspace-1",
+  state: "running",
+  incusProject: "user-abc123",
+  incusContainer: "ws-def456",
+  lastCheckedAt: "2026-07-01T00:00:00.000Z",
+} as const;
+
+function successfulOperation(
+  overrides: Partial<ProvisionerOperation> = {},
+): ProvisionerOperation {
+  return {
+    id: "op-1",
+    requestId: "req-123",
+    type: "GetWorkspaceStatus",
+    workspaceId: "workspace-1",
+    status: "succeeded",
+    result: matchingRuntimeStatus,
+    ...overrides,
+  };
+}
+
 describe("provisioner contract validators", () => {
   it("accepts a valid provisioner command envelope", () => {
     const result = validateProvisionerCommand(baseCommand);
@@ -242,13 +264,7 @@ describe("provisioner contract validators", () => {
   it("validates returned status tuples against the requested workspace", () => {
     expect(
       validateWorkspaceRuntimeStatus(
-        {
-          workspaceId: "workspace-1",
-          state: "running",
-          incusProject: "user-abc123",
-          incusContainer: "ws-def456",
-          lastCheckedAt: "2026-07-01T00:00:00.000Z",
-        },
+        matchingRuntimeStatus,
         baseCommand.workspace,
       ).ok,
     ).toBe(true);
@@ -271,20 +287,7 @@ describe("provisioner contract validators", () => {
   });
 
   it("validates operation envelopes for requested type and workspace", () => {
-    const operation: ProvisionerOperation = {
-      id: "op-1",
-      requestId: "req-123",
-      type: "GetWorkspaceStatus",
-      workspaceId: "workspace-1",
-      status: "succeeded",
-      result: {
-        workspaceId: "workspace-1",
-        state: "running",
-        incusProject: "user-abc123",
-        incusContainer: "ws-def456",
-        lastCheckedAt: "2026-07-01T00:00:00.000Z",
-      },
-    };
+    const operation = successfulOperation();
 
     expect(
       validateProvisionerOperation(

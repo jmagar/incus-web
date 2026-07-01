@@ -9,6 +9,30 @@ export const PROVISIONER_COMMAND_TYPES = [
   "RunSetup",
 ] as const;
 
+const PROVISIONER_WORKSPACE_STATES = [
+  "creating",
+  "stopped",
+  "starting",
+  "running",
+  "stopping",
+  "restarting",
+  "setting_up",
+  "degraded",
+  "failed",
+] as const;
+
+const PROVISIONER_SETUP_PHASES = [
+  "not_configured",
+  "queued",
+  "installing_mise",
+  "applying_dotfiles",
+  "checking_tools",
+  "ready",
+  "failed",
+] as const;
+
+const OPERATION_STATUSES = ["queued", "running", "succeeded", "failed"] as const;
+
 export type ProvisionerContractVersion = typeof PROVISIONER_CONTRACT_VERSION;
 export type ProvisionerCommandType = (typeof PROVISIONER_COMMAND_TYPES)[number];
 
@@ -67,7 +91,7 @@ export type ProvisionerCommand<TPayload> = {
   payload: TPayload;
 };
 
-export type OperationStatus = "queued" | "running" | "succeeded" | "failed";
+export type OperationStatus = (typeof OPERATION_STATUSES)[number];
 
 export type ProvisionerOperation<TResult = unknown> = {
   id: OperationId;
@@ -82,24 +106,9 @@ export type ProvisionerOperation<TResult = unknown> = {
 };
 
 export type ProvisionerWorkspaceState =
-  | "creating"
-  | "stopped"
-  | "starting"
-  | "running"
-  | "stopping"
-  | "restarting"
-  | "setting_up"
-  | "degraded"
-  | "failed";
+  (typeof PROVISIONER_WORKSPACE_STATES)[number];
 
-export type ProvisionerSetupPhase =
-  | "not_configured"
-  | "queued"
-  | "installing_mise"
-  | "applying_dotfiles"
-  | "checking_tools"
-  | "ready"
-  | "failed";
+export type ProvisionerSetupPhase = (typeof PROVISIONER_SETUP_PHASES)[number];
 
 export type WorkspaceRuntimeStatus = {
   workspaceId: WorkspaceId;
@@ -266,11 +275,7 @@ export function validateWorkspaceRuntimeStatus(
   if (!isRecord(status)) {
     return invalid("workspace status must be an object");
   }
-  if (
-    status.workspaceId !== workspace.id ||
-    status.incusProject !== workspace.incusProject ||
-    status.incusContainer !== workspace.incusContainer
-  ) {
+  if (!matchesWorkspaceTuple(status, workspace)) {
     return metadataMismatch("workspace status tuple did not match request");
   }
   if (!isWorkspaceState(status.state)) {
@@ -508,11 +513,7 @@ function validateCreateWorkspaceResult(
   if (!isRecord(result)) {
     return invalid("CreateWorkspace result must be an object");
   }
-  if (
-    result.workspaceId !== workspace.id ||
-    result.incusProject !== workspace.incusProject ||
-    result.incusContainer !== workspace.incusContainer
-  ) {
+  if (!matchesWorkspaceTuple(result, workspace)) {
     return metadataMismatch("CreateWorkspace result tuple did not match request");
   }
   if (
@@ -580,17 +581,7 @@ function isAgeIdentity(value: string): boolean {
 function isWorkspaceState(value: unknown): value is ProvisionerWorkspaceState {
   return (
     typeof value === "string" &&
-    [
-      "creating",
-      "stopped",
-      "starting",
-      "running",
-      "stopping",
-      "restarting",
-      "setting_up",
-      "degraded",
-      "failed",
-    ].includes(value)
+    PROVISIONER_WORKSPACE_STATES.includes(value as ProvisionerWorkspaceState)
   );
 }
 
@@ -599,22 +590,14 @@ function isProvisionerSetupPhase(
 ): value is ProvisionerSetupPhase {
   return (
     typeof value === "string" &&
-    [
-      "not_configured",
-      "queued",
-      "installing_mise",
-      "applying_dotfiles",
-      "checking_tools",
-      "ready",
-      "failed",
-    ].includes(value)
+    PROVISIONER_SETUP_PHASES.includes(value as ProvisionerSetupPhase)
   );
 }
 
 function isOperationStatus(value: unknown): value is OperationStatus {
   return (
     typeof value === "string" &&
-    ["queued", "running", "succeeded", "failed"].includes(value)
+    OPERATION_STATUSES.includes(value as OperationStatus)
   );
 }
 
@@ -657,8 +640,22 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function hasOnlyKeys(value: Record<string, unknown>, keys: string[]): boolean {
+function hasOnlyKeys(
+  value: Record<string, unknown>,
+  keys: readonly string[],
+): boolean {
   return Object.keys(value).every((key) => keys.includes(key));
+}
+
+function matchesWorkspaceTuple(
+  value: Record<string, unknown>,
+  workspace: ProvisionerWorkspaceRef,
+): boolean {
+  return (
+    value.workspaceId === workspace.id &&
+    value.incusProject === workspace.incusProject &&
+    value.incusContainer === workspace.incusContainer
+  );
 }
 
 function isPositiveTimeout(value: unknown): boolean {

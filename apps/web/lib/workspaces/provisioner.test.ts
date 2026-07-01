@@ -8,22 +8,57 @@ import { createStaticPrototypeStatusClient } from "@/lib/provisioner/client";
 import type { WorkspaceRuntimeStatus } from "@/lib/provisioner/contracts";
 import { getWorkspaceInventory } from "@/lib/workspaces/provisioner";
 
+const ownerEmail = "owner@example.com";
+const ownerSubject = "owner-subject";
+
+function authHeaders({
+  email = ownerEmail,
+  subject = ownerSubject,
+  displayName,
+  requestId,
+}: {
+  email?: string;
+  subject?: string | null;
+  displayName?: string;
+  requestId?: string;
+} = {}) {
+  const headers = new Headers({ "x-auth-request-email": email });
+  if (subject) headers.set("x-auth-request-subject", subject);
+  if (displayName) {
+    headers.set("x-auth-request-preferred-username", displayName);
+  }
+  if (requestId) headers.set("x-request-id", requestId);
+  return headers;
+}
+
+function ownerActor() {
+  return getActorFromHeaders(authHeaders());
+}
+
+function useOwnerEmail() {
+  vi.stubEnv("INCUS_WEB_WORKSPACE_OWNER_EMAIL", ownerEmail);
+}
+
+function useOwnerSubject() {
+  vi.stubEnv("INCUS_WEB_WORKSPACE_OWNER_SUBJECT", ownerSubject);
+}
+
+function usePrototypeStaticMode() {
+  vi.stubEnv("INCUS_WEB_PROVISIONER_MODE", "prototype-static");
+}
+
 describe("workspace inventory provisioner", () => {
   afterEach(() => {
-    delete process.env.INCUS_WEB_WORKSPACE_OWNER_EMAIL;
-    delete process.env.INCUS_WEB_WORKSPACE_OWNER_SUBJECT;
-    delete process.env.INCUS_WEB_ALLOW_DEV_AUTH;
-    delete process.env.INCUS_WEB_PROVISIONER_MODE;
     vi.unstubAllEnvs();
   });
 
-  it("parses Authelia/oauth2-proxy identity headers", async () => {
+  it("parses Authelia/oauth2-proxy identity headers", () => {
     const actor = getActorFromHeaders(
-      new Headers({
-        "x-auth-request-email": "jmagar@example.com",
-        "x-auth-request-preferred-username": "Jacob",
-        "x-auth-request-subject": "authelia-user-id",
-        "x-request-id": "req-123",
+      authHeaders({
+        email: "jmagar@example.com",
+        subject: "authelia-user-id",
+        displayName: "Jacob",
+        requestId: "req-123",
       }),
     );
 
@@ -34,7 +69,7 @@ describe("workspace inventory provisioner", () => {
   });
 
   it("falls back to a local development actor without headers", () => {
-    process.env.INCUS_WEB_ALLOW_DEV_AUTH = "1";
+    vi.stubEnv("INCUS_WEB_ALLOW_DEV_AUTH", "1");
     const actor = getActorFromHeaders(new Headers());
 
     expect(actor.email).toBe("dev@incus-web.local");
@@ -43,29 +78,23 @@ describe("workspace inventory provisioner", () => {
   });
 
   it("fails closed without identity headers when dev auth is not enabled", () => {
-    const originalNodeEnv = process.env.NODE_ENV;
     vi.stubEnv("NODE_ENV", "production");
-    delete process.env.INCUS_WEB_ALLOW_DEV_AUTH;
+    vi.stubEnv("INCUS_WEB_ALLOW_DEV_AUTH", "");
 
     expect(() => getActorFromHeaders(new Headers())).toThrow(
       AuthenticationRequiredError,
     );
-
-    vi.stubEnv("NODE_ENV", originalNodeEnv);
   });
 
   it("returns the current incus-web workspace read-only inventory", async () => {
-    process.env.INCUS_WEB_WORKSPACE_OWNER_EMAIL = "owner@example.com";
-    process.env.INCUS_WEB_PROVISIONER_MODE = "prototype-static";
+    useOwnerEmail();
+    usePrototypeStaticMode();
     const actor = getActorFromHeaders(
-      new Headers({
-        "x-auth-request-email": "owner@example.com",
-        "x-auth-request-subject": "authelia-user-id",
-      }),
+      authHeaders({ subject: "authelia-user-id" }),
     );
     const inventory = await getWorkspaceInventory(actor);
 
-    expect(inventory.actor.email).toBe("owner@example.com");
+    expect(inventory.actor.email).toBe(ownerEmail);
     expect(inventory.actor.userId).toBe("oidc:authelia-user-id");
     expect(inventory.workspaces).toHaveLength(1);
     expect(inventory.workspaces[0]).toMatchObject({
@@ -84,13 +113,10 @@ describe("workspace inventory provisioner", () => {
   });
 
   it("matches a configured owner subject when present", async () => {
-    process.env.INCUS_WEB_WORKSPACE_OWNER_SUBJECT = "authelia-user-id";
-    process.env.INCUS_WEB_PROVISIONER_MODE = "prototype-static";
+    vi.stubEnv("INCUS_WEB_WORKSPACE_OWNER_SUBJECT", "authelia-user-id");
+    usePrototypeStaticMode();
     const actor = getActorFromHeaders(
-      new Headers({
-        "x-auth-request-email": "owner@example.com",
-        "x-auth-request-subject": "authelia-user-id",
-      }),
+      authHeaders({ subject: "authelia-user-id" }),
     );
     const inventory = await getWorkspaceInventory(actor);
 
@@ -99,13 +125,8 @@ describe("workspace inventory provisioner", () => {
   });
 
   it("uses provisioner status when rendering the owner workspace", async () => {
-    process.env.INCUS_WEB_WORKSPACE_OWNER_EMAIL = "owner@example.com";
-    const actor = getActorFromHeaders(
-      new Headers({
-        "x-auth-request-email": "owner@example.com",
-        "x-auth-request-subject": "owner-subject",
-      }),
-    );
+    useOwnerEmail();
+    const actor = ownerActor();
     const status: WorkspaceRuntimeStatus = {
       workspaceId: "workspace-incus-web",
       state: "running",
@@ -135,9 +156,9 @@ describe("workspace inventory provisioner", () => {
   });
 
   it("does not call provisioner for non-owners", async () => {
-    process.env.INCUS_WEB_WORKSPACE_OWNER_EMAIL = "owner@example.com";
+    useOwnerEmail();
     const actor = getActorFromHeaders(
-      new Headers({ "x-auth-request-email": "other@example.com" }),
+      authHeaders({ email: "other@example.com", subject: null }),
     );
     const client = {
       send: vi.fn(),
@@ -150,13 +171,8 @@ describe("workspace inventory provisioner", () => {
   });
 
   it("returns no workspace when provisioner status fails", async () => {
-    process.env.INCUS_WEB_WORKSPACE_OWNER_SUBJECT = "owner-subject";
-    const actor = getActorFromHeaders(
-      new Headers({
-        "x-auth-request-email": "owner@example.com",
-        "x-auth-request-subject": "owner-subject",
-      }),
-    );
+    useOwnerSubject();
+    const actor = ownerActor();
     const client = {
       send: vi.fn().mockResolvedValue({
         id: "op-1",
@@ -178,13 +194,8 @@ describe("workspace inventory provisioner", () => {
   });
 
   it("returns no workspace when provisioner status tuple is mismatched", async () => {
-    process.env.INCUS_WEB_WORKSPACE_OWNER_SUBJECT = "owner-subject";
-    const actor = getActorFromHeaders(
-      new Headers({
-        "x-auth-request-email": "owner@example.com",
-        "x-auth-request-subject": "owner-subject",
-      }),
-    );
+    useOwnerSubject();
+    const actor = ownerActor();
     const client = {
       send: vi.fn().mockResolvedValue({
         id: "op-1",
@@ -208,13 +219,8 @@ describe("workspace inventory provisioner", () => {
   });
 
   it("returns no workspace when provisioner status result is malformed", async () => {
-    process.env.INCUS_WEB_WORKSPACE_OWNER_SUBJECT = "owner-subject";
-    const actor = getActorFromHeaders(
-      new Headers({
-        "x-auth-request-email": "owner@example.com",
-        "x-auth-request-subject": "owner-subject",
-      }),
-    );
+    useOwnerSubject();
+    const actor = ownerActor();
     const client = {
       send: vi.fn().mockResolvedValue({
         id: "op-1",
@@ -235,26 +241,19 @@ describe("workspace inventory provisioner", () => {
   });
 
   it("requires subject-configured ownership in production", async () => {
-    const originalNodeEnv = process.env.NODE_ENV;
     vi.stubEnv("NODE_ENV", "production");
-    process.env.INCUS_WEB_WORKSPACE_OWNER_EMAIL = "owner@example.com";
-    const actor = getActorFromHeaders(
-      new Headers({
-        "x-auth-request-email": "owner@example.com",
-        "x-auth-request-subject": "owner-subject",
-      }),
-    );
+    useOwnerEmail();
+    const actor = ownerActor();
 
     const inventory = await getWorkspaceInventory(actor);
 
     expect(inventory.workspaces).toHaveLength(0);
-    vi.stubEnv("NODE_ENV", originalNodeEnv);
   });
 
   it("does not expose the shared prototype workspace to another actor", async () => {
-    process.env.INCUS_WEB_WORKSPACE_OWNER_EMAIL = "owner@example.com";
+    useOwnerEmail();
     const actor = getActorFromHeaders(
-      new Headers({ "x-auth-request-email": "other@example.com" }),
+      authHeaders({ email: "other@example.com", subject: null }),
     );
     const inventory = await getWorkspaceInventory(actor);
 

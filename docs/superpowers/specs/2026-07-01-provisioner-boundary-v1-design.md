@@ -180,7 +180,7 @@ Result:
 ```ts
 type WorkspaceRuntimeStatus = {
   workspaceId: string
-  state: "creating" | "stopped" | "starting" | "running" | "stopping" | "degraded" | "failed"
+  state: ProvisionerWorkspaceState
   incusProject: string
   incusContainer: string
   cpuCount?: number
@@ -189,9 +189,29 @@ type WorkspaceRuntimeStatus = {
   rootDiskUsedBytes?: number
   rootDiskLimitBytes?: number
   loadAverage?: [number, number, number]
-  setupPhase?: string
+  setupPhase?: ProvisionerSetupPhase
   lastCheckedAt: string
 }
+
+type ProvisionerWorkspaceState =
+  | "creating"
+  | "stopped"
+  | "starting"
+  | "running"
+  | "stopping"
+  | "restarting"
+  | "setting_up"
+  | "degraded"
+  | "failed"
+
+type ProvisionerSetupPhase =
+  | "not_configured"
+  | "queued"
+  | "installing_mise"
+  | "applying_dotfiles"
+  | "checking_tools"
+  | "ready"
+  | "failed"
 ```
 
 ### RunSetup
@@ -248,6 +268,7 @@ Errors are mapped into stable codes:
 ```ts
 type ProvisionerErrorCode =
   | "invalid_input"
+  | "unauthenticated_service"
   | "metadata_mismatch"
   | "invalid_state"
   | "template_unavailable"

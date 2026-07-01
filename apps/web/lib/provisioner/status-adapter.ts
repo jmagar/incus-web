@@ -88,18 +88,7 @@ function workspaceState(state: ProvisionerWorkspaceState): WorkspaceState {
 }
 
 function setupPhase(value: ProvisionerSetupPhase | undefined): SetupPhase {
-  switch (value) {
-    case "ready":
-    case "failed":
-    case "not_configured":
-    case "queued":
-    case "installing_mise":
-    case "applying_dotfiles":
-    case "checking_tools":
-      return value;
-    default:
-      return "not_configured";
-  }
+  return value ?? "not_configured";
 }
 
 function numberEnv(name: string, fallback: number): number {
