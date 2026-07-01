@@ -152,7 +152,18 @@ export type LifecycleWorkspaceResult = {
 
 export type RunSetupResult = {
   workspaceId: WorkspaceId;
-  setup: Record<string, unknown>;
+  setup: ProvisionerSetupSummary;
+};
+
+export type ProvisionerCheckStatus = "ok" | "warn" | "missing" | "unknown";
+
+export type ProvisionerSetupSummary = {
+  phase?: ProvisionerSetupPhase;
+  dotfilesStatus?: ProvisionerCheckStatus;
+  miseStatus?: ProvisionerCheckStatus;
+  commandStatus?: ProvisionerCheckStatus;
+  packageStatus?: ProvisionerCheckStatus;
+  lastLogExcerpt?: string;
 };
 
 export type ProvisionerCommandPayloadMap = {
@@ -567,9 +578,9 @@ function validateOperationResult(
       return validateCreateWorkspaceResult(result, workspace);
     case "StartWorkspace":
     case "RestartWorkspace":
-      return validateLifecycleWorkspaceResult(result, workspace, "running");
+      return validateLifecycleWorkspaceResult(result, workspace, "running", true);
     case "StopWorkspace":
-      return validateLifecycleWorkspaceResult(result, workspace, "stopped");
+      return validateLifecycleWorkspaceResult(result, workspace, "stopped", false);
     case "RunSetup":
       return validateRunSetupResult(result, workspace);
   }
@@ -600,6 +611,7 @@ function validateLifecycleWorkspaceResult(
   result: unknown,
   workspace: ProvisionerWorkspaceRef,
   state: "running" | "stopped",
+  requireStatus: boolean,
 ): ValidationResult<LifecycleWorkspaceResult> {
   if (!isRecord(result)) {
     return invalid("lifecycle result must be an object");
@@ -609,6 +621,9 @@ function validateLifecycleWorkspaceResult(
   }
   if (result.state !== state) {
     return invalid("lifecycle result state is invalid");
+  }
+  if (requireStatus && result.status === undefined) {
+    return invalid("lifecycle result status is required");
   }
   if (result.status !== undefined) {
     const status = validateWorkspaceRuntimeStatus(result.status, workspace);
@@ -629,10 +644,41 @@ function validateRunSetupResult(
   if (result.workspaceId !== workspace.id) {
     return metadataMismatch("RunSetup result workspace did not match request");
   }
-  if (!isRecord(result.setup)) {
+  if (!isSetupSummary(result.setup)) {
     return invalid("RunSetup setup summary is invalid");
   }
   return { ok: true, value: result as RunSetupResult };
+}
+
+function isSetupSummary(value: unknown): value is ProvisionerSetupSummary {
+  return (
+    isRecord(value) &&
+    hasOnlyKeys(value, [
+      "phase",
+      "dotfilesStatus",
+      "miseStatus",
+      "commandStatus",
+      "packageStatus",
+      "lastLogExcerpt",
+    ]) &&
+    (value.phase === undefined || isProvisionerSetupPhase(value.phase)) &&
+    hasOptionalCheckStatus(value.dotfilesStatus) &&
+    hasOptionalCheckStatus(value.miseStatus) &&
+    hasOptionalCheckStatus(value.commandStatus) &&
+    hasOptionalCheckStatus(value.packageStatus) &&
+    (value.lastLogExcerpt === undefined ||
+      typeof value.lastLogExcerpt === "string")
+  );
+}
+
+function hasOptionalCheckStatus(value: unknown): boolean {
+  return (
+    value === undefined ||
+    value === "ok" ||
+    value === "warn" ||
+    value === "missing" ||
+    value === "unknown"
+  );
 }
 
 function isAllowedGitRepo(value: string): boolean {

@@ -443,6 +443,95 @@ describe("provisioner contract validators", () => {
     ).toBe(true);
   });
 
+  it("requires runtime status for successful start and restart results", () => {
+    expect(
+      validateProvisionerOperation(
+        {
+          id: "op-1",
+          requestId: "req-123",
+          type: "StartWorkspace",
+          workspaceId: "workspace-1",
+          status: "succeeded",
+          result: {
+            workspaceId: "workspace-1",
+            state: "running",
+          },
+        },
+        baseCommand.workspace,
+        "StartWorkspace",
+      ),
+    ).toMatchObject({
+      ok: false,
+      error: { code: "invalid_input" },
+    });
+    expect(
+      validateProvisionerOperation(
+        {
+          id: "op-1",
+          requestId: "req-123",
+          type: "RestartWorkspace",
+          workspaceId: "workspace-1",
+          status: "succeeded",
+          result: {
+            workspaceId: "workspace-1",
+            state: "running",
+            status: matchingRuntimeStatus,
+          },
+        },
+        baseCommand.workspace,
+        "RestartWorkspace",
+      ).ok,
+    ).toBe(true);
+  });
+
+  it("validates RunSetup setup summary fields", () => {
+    expect(
+      validateProvisionerOperation(
+        {
+          id: "op-1",
+          requestId: "req-123",
+          type: "RunSetup",
+          workspaceId: "workspace-1",
+          status: "succeeded",
+          result: {
+            workspaceId: "workspace-1",
+            setup: {
+              phase: "ready",
+              miseStatus: "ok",
+              commandStatus: "unknown",
+              lastLogExcerpt: "done",
+            },
+          },
+        },
+        baseCommand.workspace,
+        "RunSetup",
+      ).ok,
+    ).toBe(true);
+    expect(
+      validateProvisionerOperation(
+        {
+          id: "op-1",
+          requestId: "req-123",
+          type: "RunSetup",
+          workspaceId: "workspace-1",
+          status: "succeeded",
+          result: {
+            workspaceId: "workspace-1",
+            setup: {
+              phase: "surprise",
+              token: "secret",
+            },
+          },
+        },
+        baseCommand.workspace,
+        "RunSetup",
+      ),
+    ).toMatchObject({
+      ok: false,
+      error: { code: "invalid_input" },
+    });
+  });
+
   it("redacts age key material from commands", () => {
     const command: ProvisionerCommand<"RunSetup"> = {
       ...baseCommand,
