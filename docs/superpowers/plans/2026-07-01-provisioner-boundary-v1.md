@@ -120,7 +120,7 @@ import {
   type RunSetupPayload,
 } from "@/lib/provisioner/contracts";
 
-const baseCommand: ProvisionerCommand<Record<string, never>> = {
+const baseCommand: ProvisionerCommand<"GetWorkspaceStatus"> = {
   version: PROVISIONER_CONTRACT_VERSION,
   requestId: "req-123",
   type: "GetWorkspaceStatus",
@@ -732,8 +732,14 @@ function isWorkspaceRef(value: unknown): value is ProvisionerWorkspaceRef {
 }
 
 function isAllowedGitRepo(value: string): boolean {
-  return /^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:\.git)?$/.test(
-    value,
+  const match = value.match(
+    /^https:\/\/github\.com\/([A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?)\/([A-Za-z0-9_.-]+?)(?:\.git)?$/,
+  );
+  return Boolean(
+    match &&
+      match[2].length <= 100 &&
+      /^[A-Za-z0-9_.-]*[A-Za-z0-9]$/.test(match[2]) &&
+      !match[2].includes(".."),
   );
 }
 
@@ -1027,9 +1033,17 @@ export function createProvisionerClient(
     ): Promise<ProvisionerOperation<TResult>> {
       const validation = validateProvisionerCommand(command);
       if (!validation.ok) {
-        return failedOperation(validation.error.message);
+        return failedOperation(validation.error.message, command);
       }
-      return transport.send<unknown, TResult>(validation.value);
+      try {
+        return await transport.send(validation.value);
+      } catch {
+        return failedOperation(
+          "provisioner transport failed",
+          validation.value,
+          "unauthenticated_service",
+        );
+      }
     },
   };
 }
@@ -1069,21 +1083,48 @@ export function createStaticPrototypeStatusClient(
   });
 }
 
-function failedOperation<TResult>(
+function failedOperation(
   message: string,
-): ProvisionerOperation<TResult> {
+  command: unknown,
+  code: "invalid_input" | "unauthenticated_service" = "invalid_input",
+): ProvisionerOperation {
+  const context = operationContext(command);
   return {
     id: `failed-${crypto.randomUUID()}`,
-    requestId: "unknown",
-    type: "GetWorkspaceStatus",
-    workspaceId: "unknown",
+    requestId: context.requestId,
+    type: context.type,
+    workspaceId: context.workspaceId,
     status: "failed",
     error: {
-      code: "invalid_input",
+      code,
       message,
       retryable: false,
     },
     completedAt: new Date().toISOString(),
+  };
+}
+
+function operationContext(command: unknown) {
+  if (!isRecord(command)) {
+    return {
+      requestId: "unknown",
+      type: "GetWorkspaceStatus" as const,
+      workspaceId: "unknown",
+    };
+  }
+  const workspace = isRecord(command.workspace) ? command.workspace : undefined;
+  return {
+    requestId:
+      typeof command.requestId === "string" && command.requestId.length > 0
+        ? command.requestId
+        : "unknown",
+    type: isProvisionerCommandType(command.type)
+      ? command.type
+      : "GetWorkspaceStatus",
+    workspaceId:
+      typeof workspace?.id === "string" && workspace.id.length > 0
+        ? workspace.id
+        : "unknown",
   };
 }
 ```
