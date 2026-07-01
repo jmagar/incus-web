@@ -280,7 +280,7 @@ type ProvisionerErrorCode =
   | "operation_failed"
 ```
 
-Browser-facing responses never include raw Incus stderr. Raw output belongs in host logs. UI-visible excerpts are bounded and redacted.
+Browser-facing responses never include raw Incus stderr. Raw output belongs in host logs. UI-visible excerpts are bounded and redacted. Setup failure excerpts must redact age identities, bearer tokens, and host paths before they are stored in operation records or returned to the browser.
 
 ## Security Rules
 

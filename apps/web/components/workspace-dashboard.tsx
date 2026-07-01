@@ -289,6 +289,23 @@ export function WorkspaceDashboard({
             inventory.workspaces.map((workspace) => (
               <WorkspaceCard key={workspace.id} workspace={workspace} />
             ))
+          ) : inventory.provisionerError ? (
+            <Card accent="rose" className="p-6">
+              <p className="aurora-text-section">Workspace provisioner failed</p>
+              <p className="aurora-text-body mt-2 text-[var(--aurora-text-muted)]">
+                {inventory.provisionerError.message}
+              </p>
+              <DescriptionList className="mt-4 bg-transparent">
+                <DescriptionItem label="Code" value={inventory.provisionerError.code} active />
+                <DescriptionItem label="Request" value={inventory.provisionerError.requestId} />
+                {inventory.provisionerError.workspaceId ? (
+                  <DescriptionItem
+                    label="Workspace"
+                    value={inventory.provisionerError.workspaceId}
+                  />
+                ) : null}
+              </DescriptionList>
+            </Card>
           ) : (
             <Card accent="rose" className="p-6">
               <p className="aurora-text-section">No workspace access</p>

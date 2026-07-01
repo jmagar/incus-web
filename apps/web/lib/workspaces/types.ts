@@ -74,4 +74,11 @@ export type Workspace = {
 export type WorkspaceInventory = {
   actor: ActorContext;
   workspaces: Workspace[];
+  provisionerError?: {
+    code: string;
+    message: string;
+    requestId: string;
+    workspaceId?: string;
+    operationId?: string;
+  };
 };

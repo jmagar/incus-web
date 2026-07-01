@@ -10,6 +10,8 @@ lib="$root/scripts/incus-web-lib.sh"
 info_script="$root/scripts/incus-web-info.sh"
 smoke_image="$root/scripts/smoke-image.sh"
 workflow="$root/.github/workflows/build-image.yml"
+contract_doc="$root/docs/contracts/provisioner-boundary-v1.md"
+provisioner_plan="$root/docs/superpowers/plans/2026-07-01-provisioner-boundary-v1.md"
 
 require_literal() {
   local needle="$1"
@@ -99,12 +101,30 @@ if ! grep -Fq -- "queryUserinfo" "$root/scripts/identity-proxy.mjs"; then
 fi
 for needle in \
   "apps/web/**" \
+  "docs/contracts/**" \
+  "docs/superpowers/**" \
   "npm ci --prefix apps/web" \
   "npm --prefix apps/web run lint" \
   "npm --prefix apps/web run test" \
   "npm --prefix apps/web run build"; do
   if ! grep -Fq -- "$needle" "$workflow"; then
     printf 'missing expected web CI content: %s\n' "$needle" >&2
+    exit 1
+  fi
+done
+
+if [[ ! -f "$contract_doc" ]]; then
+  printf 'missing provisioner contract doc: %s\n' "$contract_doc" >&2
+  exit 1
+fi
+
+for needle in \
+  "status: \"succeeded\" requires a result and no error" \
+  "status: \"failed\" requires an error and no result" \
+  "WorkspaceRuntimeStatus metrics must be finite, non-negative numbers" \
+  "RunSetup ageKey accepts only value and persistEncrypted"; do
+  if ! grep -Fq -- "$needle" "$contract_doc" "$provisioner_plan"; then
+    printf 'missing expected provisioner contract invariant: %s\n' "$needle" >&2
     exit 1
   fi
 done

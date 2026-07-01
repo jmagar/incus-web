@@ -27,7 +27,9 @@ describe("provisioner status adapter", () => {
     delete process.env.INCUS_WEB_PROTOTYPE_MEMORY_BYTES;
     delete process.env.INCUS_WEB_PROTOTYPE_DISK_BYTES;
 
-    const status = prototypeRuntimeStatus("workspace-incus-web");
+    const status = prototypeRuntimeStatus(
+      buildPrototypeWorkspaceRef("oidc:owner@example.com"),
+    );
 
     expect(status).toMatchObject({
       workspaceId: "workspace-incus-web",
@@ -37,6 +39,14 @@ describe("provisioner status adapter", () => {
       cpuCount: 2,
       memoryLimitBytes: 4 * 1024 * 1024 * 1024,
     });
+  });
+
+  it("rejects invalid prototype resource environment values", () => {
+    process.env.INCUS_WEB_PROTOTYPE_CPU = "nope";
+
+    expect(() =>
+      prototypeRuntimeStatus(buildPrototypeWorkspaceRef("oidc:owner@example.com")),
+    ).toThrow("INCUS_WEB_PROTOTYPE_CPU must be a positive number");
   });
 
   it("maps runtime status to existing dashboard workspace shape", () => {

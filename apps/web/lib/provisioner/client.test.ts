@@ -23,7 +23,7 @@ const status: WorkspaceRuntimeStatus = {
   lastCheckedAt: "2026-07-01T00:00:00.000Z",
 };
 
-const command: ProvisionerCommand<Record<string, never>> = {
+const command: ProvisionerCommand<"GetWorkspaceStatus"> = {
   version: PROVISIONER_CONTRACT_VERSION,
   requestId: "req-1",
   type: "GetWorkspaceStatus",
@@ -72,9 +72,30 @@ describe("provisioner client", () => {
     expect(send).not.toHaveBeenCalled();
     expect(operation).toMatchObject({
       type: "GetWorkspaceStatus",
-      workspaceId: "unknown",
+      requestId: "req-1",
+      workspaceId: "workspace-1",
       status: "failed",
       error: { code: "invalid_input" },
+    });
+  });
+
+  it("turns transport exceptions into failed operations with command context", async () => {
+    const send = vi
+      .fn<ProvisionerTransport["send"]>()
+      .mockRejectedValue(new Error("socket down"));
+    const client = createProvisionerClient({ send });
+
+    const operation = await client.send(command);
+
+    expect(operation).toMatchObject({
+      requestId: "req-1",
+      type: "GetWorkspaceStatus",
+      workspaceId: "workspace-1",
+      status: "failed",
+      error: {
+        code: "unauthenticated_service",
+        message: "provisioner transport failed",
+      },
     });
   });
 

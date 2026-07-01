@@ -15,7 +15,7 @@ import {
   type RunSetupPayload,
 } from "@/lib/provisioner/contracts";
 
-const baseCommand: ProvisionerCommand<Record<string, never>> = {
+const baseCommand: ProvisionerCommand<"GetWorkspaceStatus"> = {
   version: PROVISIONER_CONTRACT_VERSION,
   requestId: "req-123",
   type: "GetWorkspaceStatus",
@@ -43,8 +43,8 @@ const matchingRuntimeStatus = {
 } as const;
 
 function successfulOperation(
-  overrides: Partial<ProvisionerOperation> = {},
-): ProvisionerOperation {
+  overrides: Partial<ProvisionerOperation<"GetWorkspaceStatus">> = {},
+): ProvisionerOperation<"GetWorkspaceStatus"> {
   return {
     id: "op-1",
     requestId: "req-123",
@@ -150,6 +150,37 @@ describe("provisioner contract validators", () => {
     expect(
       validateSetupPayload({
         ageKey: { value: "not-an-age-key", persistEncrypted: false },
+        skipAptScripts: true,
+      }),
+    ).toMatchObject({
+      ok: false,
+      error: { code: "invalid_input" },
+    });
+    expect(
+      validateSetupPayload({
+        ageKey: {
+          value: "AGE-SECRET-KEY-1234567890",
+          persistEncrypted: false,
+          extra: "AGE-SECRET-KEY-smuggled",
+        },
+        skipAptScripts: true,
+      }),
+    ).toMatchObject({
+      ok: false,
+      error: { code: "invalid_input" },
+    });
+    expect(
+      validateSetupPayload({
+        dotfilesRepo: "https://github.com/-bad/repo.git",
+        skipAptScripts: true,
+      }),
+    ).toMatchObject({
+      ok: false,
+      error: { code: "invalid_input" },
+    });
+    expect(
+      validateSetupPayload({
+        dotfilesRepo: "https://github.com/jmagar/repo..name.git",
         skipAptScripts: true,
       }),
     ).toMatchObject({
@@ -286,6 +317,26 @@ describe("provisioner contract validators", () => {
     });
   });
 
+  it("rejects malformed optional runtime metrics", () => {
+    for (const patch of [
+      { cpuCount: -1 },
+      { memoryLimitBytes: "huge" },
+      { rootDiskUsedBytes: Number.NaN },
+      { loadAverage: [0, 1] },
+      { loadAverage: [0, Number.POSITIVE_INFINITY, 2] },
+    ]) {
+      expect(
+        validateWorkspaceRuntimeStatus(
+          { ...matchingRuntimeStatus, ...patch },
+          baseCommand.workspace,
+        ),
+      ).toMatchObject({
+        ok: false,
+        error: { code: "invalid_input" },
+      });
+    }
+  });
+
   it("validates operation envelopes for requested type and workspace", () => {
     const operation = successfulOperation();
 
@@ -305,6 +356,49 @@ describe("provisioner contract validators", () => {
     ).toMatchObject({
       ok: false,
       error: { code: "metadata_mismatch" },
+    });
+    expect(
+      validateProvisionerOperation(
+        { ...operation, id: "" },
+        baseCommand.workspace,
+        "GetWorkspaceStatus",
+      ),
+    ).toMatchObject({
+      ok: false,
+      error: { code: "invalid_input" },
+    });
+    expect(
+      validateProvisionerOperation(
+        { ...operation, status: "succeeded", result: undefined },
+        baseCommand.workspace,
+        "GetWorkspaceStatus",
+      ),
+    ).toMatchObject({
+      ok: false,
+      error: { code: "invalid_input" },
+    });
+    expect(
+      validateProvisionerOperation(
+        {
+          ...operation,
+          error: { code: "operation_failed", message: "nope", retryable: false },
+        },
+        baseCommand.workspace,
+        "GetWorkspaceStatus",
+      ),
+    ).toMatchObject({
+      ok: false,
+      error: { code: "invalid_input" },
+    });
+    expect(
+      validateProvisionerOperation(
+        { ...operation, status: "failed", result: undefined },
+        baseCommand.workspace,
+        "GetWorkspaceStatus",
+      ),
+    ).toMatchObject({
+      ok: false,
+      error: { code: "invalid_input" },
     });
   });
 
@@ -350,7 +444,7 @@ describe("provisioner contract validators", () => {
   });
 
   it("redacts age key material from commands", () => {
-    const command: ProvisionerCommand<RunSetupPayload> = {
+    const command: ProvisionerCommand<"RunSetup"> = {
       ...baseCommand,
       type: "RunSetup",
       payload: {
@@ -389,7 +483,7 @@ describe("provisioner contract validators", () => {
           "failed with AGE-SECRET-KEY-super-secret and Bearer token in /home/agent/.config",
         retryable: false,
         details: {
-          stderr: "incus error from /var/lib/incus with AGE-SECRET-KEY-super-secret",
+          stderr: "host error from /home/agent/.local with AGE-SECRET-KEY-super-secret",
         },
       },
     };
@@ -398,7 +492,7 @@ describe("provisioner contract validators", () => {
 
     expect(JSON.stringify(redacted)).not.toContain("super-secret");
     expect(JSON.stringify(redacted)).not.toContain("Bearer token");
-    expect(JSON.stringify(redacted)).not.toContain("/var/lib/incus");
+    expect(JSON.stringify(redacted)).not.toContain("/home/agent/.local");
     expect(
       redactSetupExcerpt("raw /home/agent path AGE-SECRET-KEY-super-secret"),
     ).toBe("raw [REDACTED_PATH] path [REDACTED_AGE_KEY]");

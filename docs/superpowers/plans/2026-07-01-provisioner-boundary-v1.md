@@ -31,6 +31,14 @@
 - Static prototype mode must be explicit via `INCUS_WEB_PROVISIONER_MODE=prototype-static`; production must not silently treat a static adapter as a real host provisioner.
 - Use Aurora tokens/components for UI changes; this plan should not add new visual design work.
 
+## Review-Locked Contract Invariants
+
+- `status: "succeeded" requires a result and no error`.
+- `status: "failed" requires an error and no result`.
+- `WorkspaceRuntimeStatus metrics must be finite, non-negative numbers`.
+- `RunSetup ageKey accepts only value and persistEncrypted`.
+- `INCUS_WEB_PROVISIONER_MODE=prototype-static` is rejected in production.
+
 ---
 
 ## File Structure
@@ -1586,11 +1594,15 @@ Replace `currentWorkspace()` with:
 ```ts
 function defaultProvisionerClient(ownerUserId: string): ProvisionerClient {
   const workspace = buildPrototypeWorkspaceRef(ownerUserId);
-  if (
-    process.env.INCUS_WEB_PROVISIONER_MODE === "prototype-static" ||
-    process.env.NODE_ENV !== "production"
-  ) {
-    return createStaticPrototypeStatusClient(prototypeRuntimeStatus(workspace.id));
+  if (process.env.INCUS_WEB_PROVISIONER_MODE === "prototype-static") {
+    if (process.env.NODE_ENV === "production") {
+      return failedProvisionerClient(
+        "invalid_state",
+        "prototype-static provisioner mode is not allowed in production",
+        workspace.id,
+      );
+    }
+    return createStaticPrototypeStatusClient(prototypeRuntimeStatus(workspace));
   }
 
   return {
@@ -1626,7 +1638,7 @@ export async function getWorkspaceInventory(
 
   const workspace = buildPrototypeWorkspaceRef(owner.userId);
   const provisioner = client ?? defaultProvisionerClient(owner.userId);
-  const operation = await provisioner.send<WorkspaceRuntimeStatus>({
+  const operation = await provisioner.send({
     version: PROVISIONER_CONTRACT_VERSION,
     requestId: actor.requestId,
     type: "GetWorkspaceStatus",
@@ -1640,15 +1652,12 @@ export async function getWorkspaceInventory(
     payload: {},
   });
 
-  if (operation.status !== "succeeded" || !operation.result) {
-    return { actor, workspaces: [] };
-  }
-  const validated = validateProvisionerOperation<WorkspaceRuntimeStatus>(
+  const validated = validateProvisionerOperation(
     operation,
     workspace,
     "GetWorkspaceStatus",
   );
-  if (!validated.ok || !validated.value.result) {
+  if (!validated.ok || validated.value.status !== "succeeded") {
     return { actor, workspaces: [] };
   }
 

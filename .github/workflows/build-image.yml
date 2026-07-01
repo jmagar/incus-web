@@ -14,6 +14,8 @@ on:
       - scripts/incus-web-lib.sh
       - scripts/smoke-image.sh
       - tests/deploy_static_tests.sh
+      - docs/contracts/**
+      - docs/superpowers/**
       - apps/web/**
   pull_request:
     paths:
@@ -25,6 +27,8 @@ on:
       - scripts/incus-web-lib.sh
       - scripts/smoke-image.sh
       - tests/deploy_static_tests.sh
+      - docs/contracts/**
+      - docs/superpowers/**
       - apps/web/**
 
 permissions:

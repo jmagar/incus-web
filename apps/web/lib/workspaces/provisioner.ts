@@ -4,7 +4,8 @@ import type {
 } from "@/lib/workspaces/types";
 import {
   PROVISIONER_CONTRACT_VERSION,
-  type WorkspaceRuntimeStatus,
+  type ProvisionerCommand,
+  type ProvisionerError,
   validateProvisionerOperation,
 } from "@/lib/provisioner/contracts";
 import {
@@ -53,25 +54,29 @@ function actorMatchesOwner(actor: ActorContext, owner: ConfiguredOwner) {
 function defaultProvisionerClient(ownerUserId: string): ProvisionerClient {
   const workspace = buildPrototypeWorkspaceRef(ownerUserId);
   if (process.env.INCUS_WEB_PROVISIONER_MODE === "prototype-static") {
-    return createStaticPrototypeStatusClient(prototypeRuntimeStatus(workspace.id));
+    if (process.env.NODE_ENV === "production") {
+      return failedProvisionerClient(
+        "invalid_state",
+        "prototype-static provisioner mode is not allowed in production",
+        workspace.id,
+      );
+    }
+    try {
+      return createStaticPrototypeStatusClient(prototypeRuntimeStatus(workspace));
+    } catch (error) {
+      return failedProvisionerClient(
+        "invalid_input",
+        error instanceof Error ? error.message : "invalid prototype config",
+        workspace.id,
+      );
+    }
   }
 
-  return {
-    async send() {
-      return {
-        id: "missing-provisioner",
-        requestId: "unknown",
-        type: "GetWorkspaceStatus",
-        workspaceId: workspace.id,
-        status: "failed",
-        error: {
-          code: "unauthenticated_service",
-          message: "host provisioner transport is not configured",
-          retryable: false,
-        },
-      };
-    },
-  };
+  return failedProvisionerClient(
+    "unauthenticated_service",
+    "host provisioner transport is not configured",
+    workspace.id,
+  );
 }
 
 export async function getWorkspaceInventory(
@@ -85,7 +90,7 @@ export async function getWorkspaceInventory(
 
   const workspace = buildPrototypeWorkspaceRef(owner.userId);
   const provisioner = client ?? defaultProvisionerClient(owner.userId);
-  const operation = await provisioner.send<WorkspaceRuntimeStatus>({
+  const command: ProvisionerCommand<"GetWorkspaceStatus"> = {
     version: PROVISIONER_CONTRACT_VERSION,
     requestId: actor.requestId,
     type: "GetWorkspaceStatus",
@@ -97,22 +102,105 @@ export async function getWorkspaceInventory(
     },
     workspace,
     payload: {},
-  });
+  };
+  const operation = await provisioner.send(command);
 
-  if (operation.status !== "succeeded" || !operation.result) {
-    return { actor, workspaces: [] };
-  }
-  const validated = validateProvisionerOperation<WorkspaceRuntimeStatus>(
+  const validated = validateProvisionerOperation(
     operation,
     workspace,
     "GetWorkspaceStatus",
   );
-  if (!validated.ok || !validated.value.result) {
-    return { actor, workspaces: [] };
+  if (!validated.ok) {
+    return inventoryFailure(actor, workspace.id, command.requestId, validated.error);
+  }
+  if (validated.value.status !== "succeeded") {
+    return inventoryFailure(
+      actor,
+      workspace.id,
+      validated.value.requestId,
+      validated.value.error ?? {
+        code: "invalid_state",
+        message: `provisioner operation is ${validated.value.status}`,
+        retryable: true,
+      },
+      validated.value.id,
+    );
+  }
+  if (!validated.value.result) {
+    return inventoryFailure(actor, workspace.id, validated.value.requestId, {
+      code: "invalid_state",
+      message: "provisioner succeeded without a workspace status result",
+      retryable: false,
+    });
   }
 
   return {
     actor,
     workspaces: [statusToWorkspace(validated.value.result, owner.userId)],
   };
+}
+
+function failedProvisionerClient(
+  code: ProvisionerError["code"],
+  message: string,
+  workspaceId: string,
+): ProvisionerClient {
+  return {
+    async send(command) {
+      const requestId = isProvisionerCommand(command)
+        ? command.requestId
+        : "unknown";
+      return {
+        id: `failed-${requestId}`,
+        requestId,
+        type: "GetWorkspaceStatus",
+        workspaceId,
+        status: "failed",
+        error: {
+          code,
+          message,
+          retryable: false,
+        },
+        completedAt: new Date().toISOString(),
+      };
+    },
+  };
+}
+
+function inventoryFailure(
+  actor: ActorContext,
+  workspaceId: string,
+  requestId: string,
+  error: ProvisionerError,
+  operationId?: string,
+): WorkspaceInventory {
+  console.warn("workspace provisioner failed", {
+    requestId,
+    actor: actor.userId,
+    workspaceId,
+    operationId,
+    code: error.code,
+  });
+  return {
+    actor,
+    workspaces: [],
+    provisionerError: {
+      code: error.code,
+      message: error.message,
+      requestId,
+      workspaceId,
+      operationId,
+    },
+  };
+}
+
+function isProvisionerCommand(
+  command: unknown,
+): command is ProvisionerCommand<"GetWorkspaceStatus"> {
+  return (
+    typeof command === "object" &&
+    command !== null &&
+    "requestId" in command &&
+    typeof command.requestId === "string"
+  );
 }

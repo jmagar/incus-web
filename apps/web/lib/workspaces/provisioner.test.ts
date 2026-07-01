@@ -5,7 +5,10 @@ import {
   getActorFromHeaders,
 } from "@/lib/auth/identity";
 import { createStaticPrototypeStatusClient } from "@/lib/provisioner/client";
-import type { WorkspaceRuntimeStatus } from "@/lib/provisioner/contracts";
+import {
+  PROVISIONER_CONTRACT_VERSION,
+  type WorkspaceRuntimeStatus,
+} from "@/lib/provisioner/contracts";
 import { getWorkspaceInventory } from "@/lib/workspaces/provisioner";
 
 const ownerEmail = "owner@example.com";
@@ -155,6 +158,55 @@ describe("workspace inventory provisioner", () => {
     });
   });
 
+  it("sends the expected status command to the provisioner", async () => {
+    useOwnerEmail();
+    const actor = getActorFromHeaders(
+      authHeaders({
+        subject: "authelia-user-id",
+        displayName: "Owner",
+        requestId: "req-command",
+      }),
+    );
+    const status: WorkspaceRuntimeStatus = {
+      workspaceId: "workspace-incus-web",
+      state: "running",
+      incusProject: "user-incus-web",
+      incusContainer: "ws-incus-web",
+      lastCheckedAt: "2026-07-01T00:00:00.000Z",
+    };
+    const client = {
+      send: vi.fn().mockResolvedValue({
+        id: "op-1",
+        requestId: "req-command",
+        type: "GetWorkspaceStatus",
+        workspaceId: "workspace-incus-web",
+        status: "succeeded",
+        result: status,
+      }),
+    };
+
+    await getWorkspaceInventory(actor, client);
+
+    expect(client.send).toHaveBeenCalledWith({
+      version: PROVISIONER_CONTRACT_VERSION,
+      requestId: "req-command",
+      type: "GetWorkspaceStatus",
+      actor: {
+        userId: "oidc:authelia-user-id",
+        oidcSubject: "authelia-user-id",
+        email: ownerEmail,
+        displayName: "Owner",
+      },
+      workspace: {
+        id: "workspace-incus-web",
+        ownerUserId: "oidc:owner@example.com",
+        incusProject: "user-incus-web",
+        incusContainer: "ws-incus-web",
+      },
+      payload: {},
+    });
+  });
+
   it("does not call provisioner for non-owners", async () => {
     useOwnerEmail();
     const actor = getActorFromHeaders(
@@ -182,7 +234,7 @@ describe("workspace inventory provisioner", () => {
         status: "failed",
         error: {
           code: "incus_unavailable",
-          message: "raw /var/lib/incus path should not be rendered",
+          message: "raw /home/agent/.local path should not be rendered",
           retryable: true,
         },
       }),
@@ -191,6 +243,12 @@ describe("workspace inventory provisioner", () => {
     const inventory = await getWorkspaceInventory(actor, client);
 
     expect(inventory.workspaces).toHaveLength(0);
+    expect(inventory.provisionerError).toMatchObject({
+      code: "incus_unavailable",
+      requestId: "req-1",
+      workspaceId: "workspace-incus-web",
+      operationId: "op-1",
+    });
   });
 
   it("returns no workspace when provisioner status tuple is mismatched", async () => {
@@ -216,6 +274,11 @@ describe("workspace inventory provisioner", () => {
     const inventory = await getWorkspaceInventory(actor, client);
 
     expect(inventory.workspaces).toHaveLength(0);
+    expect(inventory.provisionerError).toMatchObject({
+      code: "metadata_mismatch",
+      requestId: actor.requestId,
+      workspaceId: "workspace-incus-web",
+    });
   });
 
   it("returns no workspace when provisioner status result is malformed", async () => {
@@ -238,6 +301,43 @@ describe("workspace inventory provisioner", () => {
     const inventory = await getWorkspaceInventory(actor, client);
 
     expect(inventory.workspaces).toHaveLength(0);
+    expect(inventory.provisionerError).toMatchObject({
+      code: "metadata_mismatch",
+      requestId: actor.requestId,
+      workspaceId: "workspace-incus-web",
+    });
+  });
+
+  it("surfaces static prototype mode as a production configuration error", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    useOwnerSubject();
+    usePrototypeStaticMode();
+    const actor = ownerActor();
+
+    const inventory = await getWorkspaceInventory(actor);
+
+    expect(inventory.workspaces).toHaveLength(0);
+    expect(inventory.provisionerError).toMatchObject({
+      code: "invalid_state",
+      message: "prototype-static provisioner mode is not allowed in production",
+      workspaceId: "workspace-incus-web",
+    });
+  });
+
+  it("surfaces invalid prototype resource configuration", async () => {
+    useOwnerSubject();
+    usePrototypeStaticMode();
+    vi.stubEnv("INCUS_WEB_PROTOTYPE_CPU", "nope");
+    const actor = ownerActor();
+
+    const inventory = await getWorkspaceInventory(actor);
+
+    expect(inventory.workspaces).toHaveLength(0);
+    expect(inventory.provisionerError).toMatchObject({
+      code: "invalid_input",
+      message: "INCUS_WEB_PROTOTYPE_CPU must be a positive number",
+      workspaceId: "workspace-incus-web",
+    });
   });
 
   it("requires subject-configured ownership in production", async () => {

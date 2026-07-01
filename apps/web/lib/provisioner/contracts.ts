@@ -82,28 +82,7 @@ export type ProvisionerWorkspaceRef = {
   incusContainer: IncusContainerName;
 };
 
-export type ProvisionerCommand<TPayload> = {
-  version: ProvisionerContractVersion;
-  requestId: RequestId;
-  type: ProvisionerCommandType;
-  actor: ProvisionerActor;
-  workspace: ProvisionerWorkspaceRef;
-  payload: TPayload;
-};
-
 export type OperationStatus = (typeof OPERATION_STATUSES)[number];
-
-export type ProvisionerOperation<TResult = unknown> = {
-  id: OperationId;
-  requestId: RequestId;
-  type: ProvisionerCommandType;
-  workspaceId: WorkspaceId;
-  status: OperationStatus;
-  result?: TResult;
-  error?: ProvisionerError;
-  startedAt?: string;
-  completedAt?: string;
-};
 
 export type ProvisionerWorkspaceState =
   (typeof PROVISIONER_WORKSPACE_STATES)[number];
@@ -176,6 +155,53 @@ export type RunSetupResult = {
   setup: Record<string, unknown>;
 };
 
+export type ProvisionerCommandPayloadMap = {
+  CreateWorkspace: CreateWorkspacePayload;
+  StartWorkspace: StartWorkspacePayload;
+  StopWorkspace: StopWorkspacePayload;
+  RestartWorkspace: RestartWorkspacePayload;
+  GetWorkspaceStatus: GetWorkspaceStatusPayload;
+  RunSetup: RunSetupPayload;
+};
+
+export type ProvisionerCommandResultMap = {
+  CreateWorkspace: CreateWorkspaceResult;
+  StartWorkspace: LifecycleWorkspaceResult;
+  StopWorkspace: LifecycleWorkspaceResult;
+  RestartWorkspace: LifecycleWorkspaceResult;
+  GetWorkspaceStatus: WorkspaceRuntimeStatus;
+  RunSetup: RunSetupResult;
+};
+
+export type ProvisionerCommand<
+  TType extends ProvisionerCommandType = ProvisionerCommandType,
+> = {
+  [K in TType]: {
+    version: ProvisionerContractVersion;
+    requestId: RequestId;
+    type: K;
+    actor: ProvisionerActor;
+    workspace: ProvisionerWorkspaceRef;
+    payload: ProvisionerCommandPayloadMap[K];
+  };
+}[TType];
+
+export type ProvisionerOperation<
+  TType extends ProvisionerCommandType = ProvisionerCommandType,
+> = {
+  [K in TType]: {
+    id: OperationId;
+    requestId: RequestId;
+    type: K;
+    workspaceId: WorkspaceId;
+    status: OperationStatus;
+    result?: ProvisionerCommandResultMap[K];
+    error?: ProvisionerError;
+    startedAt?: string;
+    completedAt?: string;
+  };
+}[TType];
+
 export function isProvisionerCommandType(
   value: unknown,
 ): value is ProvisionerCommandType {
@@ -199,7 +225,7 @@ export function validateGeneratedName(
 
 export function validateProvisionerCommand(
   command: unknown,
-): ValidationResult<ProvisionerCommand<unknown>> {
+): ValidationResult<ProvisionerCommand> {
   if (!isRecord(command)) {
     return invalid("command must be an object");
   }
@@ -222,7 +248,7 @@ export function validateProvisionerCommand(
   if (!payload.ok) {
     return payload;
   }
-  return { ok: true, value: command as ProvisionerCommand<unknown> };
+  return { ok: true, value: command as ProvisionerCommand };
 }
 
 export function validateSetupPayload(
@@ -250,6 +276,9 @@ export function validateSetupPayload(
   if (payload.ageKey !== undefined) {
     if (!isRecord(payload.ageKey)) {
       return invalid("ageKey is invalid");
+    }
+    if (!hasOnlyKeys(payload.ageKey, ["value", "persistEncrypted"])) {
+      return invalid("ageKey contains unsupported fields");
     }
     if (
       typeof payload.ageKey.value !== "string" ||
@@ -293,16 +322,36 @@ export function validateWorkspaceRuntimeStatus(
   ) {
     return invalid("setupPhase is invalid");
   }
+  if (
+    !hasOptionalNonNegativeNumber(status.cpuCount) ||
+    !hasOptionalNonNegativeNumber(status.memoryUsedBytes) ||
+    !hasOptionalNonNegativeNumber(status.memoryLimitBytes) ||
+    !hasOptionalNonNegativeNumber(status.rootDiskUsedBytes) ||
+    !hasOptionalNonNegativeNumber(status.rootDiskLimitBytes)
+  ) {
+    return invalid("workspace status metrics are invalid");
+  }
+  if (status.loadAverage !== undefined && !isLoadAverage(status.loadAverage)) {
+    return invalid("workspace status load average is invalid");
+  }
   return { ok: true, value: status as WorkspaceRuntimeStatus };
 }
 
-export function validateProvisionerOperation<TResult>(
+export function validateProvisionerOperation<TType extends ProvisionerCommandType>(
   operation: unknown,
   workspace: ProvisionerWorkspaceRef,
-  type: ProvisionerCommandType,
-): ValidationResult<ProvisionerOperation<TResult>> {
+  type: TType,
+): ValidationResult<ProvisionerOperation<TType>> {
   if (!isRecord(operation)) {
     return invalid("operation must be an object");
+  }
+  if (
+    typeof operation.id !== "string" ||
+    operation.id.length === 0 ||
+    typeof operation.requestId !== "string" ||
+    operation.requestId.length === 0
+  ) {
+    return invalid("operation identity is invalid");
   }
   if (operation.type !== type || operation.workspaceId !== workspace.id) {
     return metadataMismatch("operation tuple did not match request");
@@ -310,20 +359,42 @@ export function validateProvisionerOperation<TResult>(
   if (!isOperationStatus(operation.status)) {
     return invalid("operation status is invalid");
   }
-  if (operation.status === "succeeded" && operation.result !== undefined) {
+  if (
+    operation.startedAt !== undefined &&
+    !isIsoTimestamp(operation.startedAt)
+  ) {
+    return invalid("operation startedAt is invalid");
+  }
+  if (
+    operation.completedAt !== undefined &&
+    !isIsoTimestamp(operation.completedAt)
+  ) {
+    return invalid("operation completedAt is invalid");
+  }
+  if (operation.status === "succeeded") {
+    if (operation.result === undefined || operation.error !== undefined) {
+      return invalid("succeeded operation must include only a result");
+    }
     const result = validateOperationResult(type, operation.result, workspace);
     if (!result.ok) {
       return result;
     }
+  } else if (operation.status === "failed") {
+    if (operation.error === undefined || operation.result !== undefined) {
+      return invalid("failed operation must include only an error");
+    }
+    if (!isProvisionerError(operation.error)) {
+      return invalid("operation error is invalid");
+    }
+  } else if (operation.result !== undefined || operation.error !== undefined) {
+    return invalid("pending operation must not include result or error");
   }
-  return { ok: true, value: operation as ProvisionerOperation<TResult> };
+  return { ok: true, value: operation as ProvisionerOperation<TType> };
 }
 
-export function redactProvisionerCommand<TPayload>(
-  command: ProvisionerCommand<TPayload>,
-): ProvisionerCommand<unknown> {
+export function redactProvisionerCommand(command: ProvisionerCommand): unknown {
   if (command.type !== "RunSetup" || !isRecord(command.payload)) {
-    return command as ProvisionerCommand<unknown>;
+    return command;
   }
   const payload: Record<string, unknown> = { ...command.payload };
   if (isRecord(payload.ageKey)) {
@@ -338,9 +409,7 @@ export function redactProvisionerCommand<TPayload>(
   };
 }
 
-export function redactProvisionerOperation<TResult>(
-  operation: ProvisionerOperation<TResult>,
-): ProvisionerOperation<unknown> {
+export function redactProvisionerOperation(operation: ProvisionerOperation): unknown {
   const error = operation.error
     ? {
         ...operation.error,
@@ -567,8 +636,14 @@ function validateRunSetupResult(
 }
 
 function isAllowedGitRepo(value: string): boolean {
-  return /^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:\.git)?$/.test(
-    value,
+  const match = value.match(
+    /^https:\/\/github\.com\/([A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?)\/([A-Za-z0-9_.-]+?)(?:\.git)?$/,
+  );
+  return Boolean(
+    match &&
+      match[2].length <= 100 &&
+      /^[A-Za-z0-9_.-]*[A-Za-z0-9]$/.test(match[2]) &&
+      !match[2].includes(".."),
   );
 }
 
@@ -599,6 +674,55 @@ function isOperationStatus(value: unknown): value is OperationStatus {
     typeof value === "string" &&
     OPERATION_STATUSES.includes(value as OperationStatus)
   );
+}
+
+function isProvisionerError(value: unknown): value is ProvisionerError {
+  return (
+    isRecord(value) &&
+    isProvisionerErrorCode(value.code) &&
+    typeof value.message === "string" &&
+    value.message.length > 0 &&
+    typeof value.retryable === "boolean" &&
+    (value.details === undefined || isRecord(value.details))
+  );
+}
+
+function isProvisionerErrorCode(value: unknown): value is ProvisionerErrorCode {
+  return (
+    value === "invalid_input" ||
+    value === "unauthenticated_service" ||
+    value === "metadata_mismatch" ||
+    value === "invalid_state" ||
+    value === "template_unavailable" ||
+    value === "incus_unavailable" ||
+    value === "zfs_unavailable" ||
+    value === "quota_failed" ||
+    value === "setup_failed" ||
+    value === "timeout" ||
+    value === "operation_failed"
+  );
+}
+
+function hasOptionalNonNegativeNumber(value: unknown): boolean {
+  return (
+    value === undefined ||
+    (typeof value === "number" && Number.isFinite(value) && value >= 0)
+  );
+}
+
+function isLoadAverage(value: unknown): value is [number, number, number] {
+  return (
+    Array.isArray(value) &&
+    value.length === 3 &&
+    value.every(
+      (entry) =>
+        typeof entry === "number" && Number.isFinite(entry) && entry >= 0,
+    )
+  );
+}
+
+function isIsoTimestamp(value: unknown): value is string {
+  return typeof value === "string" && !Number.isNaN(Date.parse(value));
 }
 
 function sanitizeDetails(

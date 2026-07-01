@@ -1,14 +1,12 @@
 import type {
   ProvisionerSetupPhase,
   ProvisionerWorkspaceRef,
-  ProvisionerWorkspaceState,
   WorkspaceRuntimeStatus,
 } from "@/lib/provisioner/contracts";
 import type {
   SetupPhase,
   Workspace,
   WorkspaceSetupSummary,
-  WorkspaceState,
 } from "@/lib/workspaces/types";
 
 const createdAt = "2026-01-01T00:00:00.000Z";
@@ -26,13 +24,13 @@ export function buildPrototypeWorkspaceRef(
 }
 
 export function prototypeRuntimeStatus(
-  workspaceId: string,
+  workspace: ProvisionerWorkspaceRef,
 ): WorkspaceRuntimeStatus {
   return {
-    workspaceId,
+    workspaceId: workspace.id,
     state: "running",
-    incusProject: "user-incus-web",
-    incusContainer: "ws-incus-web",
+    incusProject: workspace.incusProject,
+    incusContainer: workspace.incusContainer,
     cpuCount: numberEnv("INCUS_WEB_PROTOTYPE_CPU", 2),
     memoryLimitBytes: numberEnv("INCUS_WEB_PROTOTYPE_MEMORY_BYTES", 4 * gib),
     rootDiskLimitBytes: numberEnv("INCUS_WEB_PROTOTYPE_DISK_BYTES", 20 * gib),
@@ -53,7 +51,7 @@ export function statusToWorkspace(
     incusProject: status.incusProject,
     incusContainer: status.incusContainer,
     templateVersion: "prototype",
-    state: workspaceState(status.state),
+    state: status.state,
     resourceProfileId: "local-dev",
     resources: {
       cpu: status.cpuCount ? `${status.cpuCount} vCPU` : "unknown",
@@ -83,10 +81,6 @@ function setupSummary(status: WorkspaceRuntimeStatus): WorkspaceSetupSummary {
   };
 }
 
-function workspaceState(state: ProvisionerWorkspaceState): WorkspaceState {
-  return state;
-}
-
 function setupPhase(value: ProvisionerSetupPhase | undefined): SetupPhase {
   return value ?? "not_configured";
 }
@@ -97,5 +91,8 @@ function numberEnv(name: string, fallback: number): number {
     return fallback;
   }
   const parsed = Number(value);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new Error(`${name} must be a positive number`);
+  }
+  return parsed;
 }
