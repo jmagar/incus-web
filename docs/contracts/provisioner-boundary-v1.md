@@ -471,6 +471,16 @@ This compatibility is an implementation detail. The web app consumes only this c
 
 ## Acceptance Criteria
 
+## Implementation Entry Points
+
+The first TypeScript implementation lives in:
+
+- `apps/web/lib/provisioner/contracts.ts` for contract types and validators
+- `apps/web/lib/provisioner/client.ts` for the provisioner client interface
+- `apps/web/lib/provisioner/status-adapter.ts` for mapping v1 status into workspace dashboard data
+
+Future host transports must preserve these interfaces so the Next.js workspace inventory does not learn raw Incus details.
+
 - A developer can implement Zod schemas directly from this document.
 - The first implementation slice can be planned without consulting raw Incus docs.
 - Next.js remains outside the host mutation boundary.

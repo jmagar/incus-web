@@ -356,7 +356,7 @@ describe("provisioner contract validators", () => {
 Run:
 
 ```bash
-npm --prefix apps/web run test -- apps/web/lib/provisioner/contracts.test.ts
+npm --prefix apps/web run test -- lib/provisioner/contracts.test.ts
 ```
 
 Expected: FAIL because `@/lib/provisioner/contracts` does not exist.
@@ -836,7 +836,7 @@ function invalid(message: string): ValidationResult<never> {
 Run:
 
 ```bash
-npm --prefix apps/web run test -- apps/web/lib/provisioner/contracts.test.ts
+npm --prefix apps/web run test -- lib/provisioner/contracts.test.ts
 ```
 
 Expected: PASS.
@@ -981,7 +981,7 @@ describe("provisioner client", () => {
 Run:
 
 ```bash
-npm --prefix apps/web run test -- apps/web/lib/provisioner/client.test.ts
+npm --prefix apps/web run test -- lib/provisioner/client.test.ts
 ```
 
 Expected: FAIL because `client.ts` does not exist.
@@ -1085,7 +1085,7 @@ function failedOperation<TResult>(
 Run:
 
 ```bash
-npm --prefix apps/web run test -- apps/web/lib/provisioner/client.test.ts
+npm --prefix apps/web run test -- lib/provisioner/client.test.ts
 ```
 
 Expected: PASS.
@@ -1192,7 +1192,7 @@ describe("provisioner status adapter", () => {
 Run:
 
 ```bash
-npm --prefix apps/web run test -- apps/web/lib/provisioner/status-adapter.test.ts
+npm --prefix apps/web run test -- lib/provisioner/status-adapter.test.ts
 ```
 
 Expected: FAIL because `status-adapter.ts` does not exist.
@@ -1318,7 +1318,7 @@ function numberEnv(name: string, fallback: number): number {
 Run:
 
 ```bash
-npm --prefix apps/web run test -- apps/web/lib/provisioner/status-adapter.test.ts
+npm --prefix apps/web run test -- lib/provisioner/status-adapter.test.ts
 ```
 
 Expected: PASS.
@@ -1529,7 +1529,7 @@ Add these tests inside the existing `describe` block:
 Run:
 
 ```bash
-npm --prefix apps/web run test -- apps/web/lib/workspaces/provisioner.test.ts
+npm --prefix apps/web run test -- lib/workspaces/provisioner.test.ts
 ```
 
 Expected: FAIL because `getWorkspaceInventory` does not accept an injected client and still uses hardcoded constants.
@@ -1664,7 +1664,7 @@ export async function getWorkspaceInventory(
 Run:
 
 ```bash
-npm --prefix apps/web run test -- apps/web/lib/workspaces/provisioner.test.ts
+npm --prefix apps/web run test -- lib/workspaces/provisioner.test.ts
 ```
 
 Expected: PASS.
@@ -1719,7 +1719,7 @@ Implementation starts with an in-process/mock provisioner client and prototype s
 Run:
 
 ```bash
-npm --prefix apps/web run test -- apps/web/lib/provisioner/contracts.test.ts apps/web/lib/provisioner/client.test.ts apps/web/lib/provisioner/status-adapter.test.ts apps/web/lib/workspaces/provisioner.test.ts
+npm --prefix apps/web run test -- lib/provisioner/contracts.test.ts lib/provisioner/client.test.ts lib/provisioner/status-adapter.test.ts lib/workspaces/provisioner.test.ts
 ```
 
 Expected: PASS.
@@ -1754,7 +1754,7 @@ const path = require("path");
 const forbidden = [
   "child_process",
   "spawn(",
-  "exec(",
+  "execFile(",
   "incus ",
   "zfs ",
   "scripts/",
@@ -1780,6 +1780,9 @@ function walk(dir) {
     const text = fs.readFileSync(file, "utf8");
     for (const needle of forbidden) {
       if (text.includes(needle)) hits.push(`${rel}: ${needle}`);
+    }
+    if (/(^|[^.A-Za-z0-9_$])exec\s*\(/.test(text)) {
+      hits.push(`${rel}: shell-like exec(`);
     }
   }
 }

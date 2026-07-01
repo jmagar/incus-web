@@ -312,6 +312,8 @@ CI should keep building and smoking the image. Full Incus lifecycle tests can ru
 
 ## Implementation Slice
 
+Implementation starts with a Next.js-side provisioner client facade and explicit static prototype status adapter. This intentionally proves the contract and call boundary before adding the host-local provisioner transport. The next slice can replace the static adapter with a Unix-socket or localhost provisioner service without changing workspace inventory callers.
+
 The first implementation plan should deliver:
 
 1. Provisioner TypeScript contract types under `apps/web/lib/provisioner`.
