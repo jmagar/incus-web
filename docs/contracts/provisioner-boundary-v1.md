@@ -11,6 +11,8 @@ This contract defines the first narrow boundary between the Next.js control plan
 
 The provisioner is the only component in this slice allowed to mutate Incus, ZFS, workspace disk mounts, network ACLs, container profiles, and setup execution. The Next.js app calls product-level commands and never receives Incus host credentials or raw Incus API access.
 
+The first implementation PR may introduce only the Next.js-side contract/client facade and a static prototype status adapter. That facade is not a host security boundary. `CreateWorkspace`, lifecycle mutation, and `RunSetup` routes must remain disabled until a host-local transport, service authentication, metadata revalidation, and redacted operation store are implemented.
+
 ## Versioning
 
 Contract version: `provisioner.v1`
@@ -399,9 +401,12 @@ The provisioner must still validate the actual strings at runtime:
 ### Setup Input
 
 - `dotfilesRepo` max length: 512 characters.
-- supported repo forms: `https://...`, `ssh://...`, `git@host:owner/repo.git`, or GitHub shorthand accepted by `chezmoi init`
+- hosted default supported repo forms: `https://github.com/<owner>/<repo>` or `https://github.com/<owner>/<repo>.git`
+- `ssh://...`, `git@host:owner/repo.git`, GitHub shorthand, and non-GitHub hosts require an explicit host policy before use.
+- dotfiles are executable code inside the same personal workspace trust boundary; they are not safe for collaborators who do not explicitly trust the workspace owner.
 - `ageKey.value` max length: 200000 characters
-- `ageKey.value` must contain `AGE-SECRET-KEY-`
+- `ageKey.value` must contain valid line-oriented age identity material.
+- `ageKey.persistEncrypted=true` must be rejected unless host policy explicitly enables encrypted-at-rest key persistence.
 
 ### Timeouts
 
@@ -419,6 +424,7 @@ The provisioner must still validate the actual strings at runtime:
 - The provisioner never accepts arbitrary shell snippets.
 - The provisioner never trusts browser-supplied Incus names without metadata validation.
 - Secret-bearing fields must be redacted from logs and operation records.
+- Browser-facing setup excerpts must be allowlisted summaries or redacted excerpts. Raw Incus stderr, host paths, bearer tokens, age key material, and full setup output remain host-local only.
 
 ## Audit Requirements
 
@@ -448,18 +454,20 @@ The implementation must include tests that prove:
 - mismatched project/container tuples fail with `metadata_mismatch`
 - raw Incus config keys are not accepted in payloads
 - setup secret fields are redacted in errors/log excerpts
+- status operations validate `workspaceId`, `incusProject`, and `incusContainer` against the requested workspace tuple before rendering
+- production owner gating requires stable OIDC subject configuration; email fallback is only for local prototype/development mode
 - `CreateWorkspace` and `RunSetup` return operation envelopes
 - status results fit `WorkspaceRuntimeStatus`
 
 ## Compatibility With Current Prototype
 
-The first implementation can wrap existing shell helpers:
+The true host provisioner implementation can wrap existing shell helpers:
 
 - `scripts/incus-web-lib.sh` for network/profile/common behavior
 - image/profile conventions from `distrobuilder.yaml` and `incus-web-profile.yaml`
 - current setup behavior from the container-local setup server
 
-This compatibility is an implementation detail. The web app consumes only this contract.
+This compatibility is an implementation detail. The web app consumes only this contract. Static prototype status mode must be explicitly configured and must not be treated as a real host-local provisioner.
 
 ## Acceptance Criteria
 

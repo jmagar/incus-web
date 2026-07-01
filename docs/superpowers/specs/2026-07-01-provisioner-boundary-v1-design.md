@@ -316,9 +316,11 @@ The first implementation plan should deliver:
 
 1. Provisioner TypeScript contract types under `apps/web/lib/provisioner`.
 2. A local provisioner client interface used by server code.
-3. A host-side script-backed provisioner implementation that wraps existing shell helpers.
+3. A static prototype status adapter that is explicitly scoped to current single-container inventory compatibility.
 4. Workspace inventory backed by provisioner `GetWorkspaceStatus` instead of hardcoded constants.
-5. Tests for command validation and non-owner workspace visibility.
+5. Tests for command validation, status tuple validation, non-owner workspace visibility, and failed/malformed status results.
+
+The host-side script-backed provisioner implementation is the next slice. It should add a Unix socket or localhost-only authenticated transport, host metadata revalidation, redacted operation storage, and a `GetWorkspaceStatus` implementation that can replace the static adapter without changing workspace inventory callers.
 
 Database-backed persistence can be added in the next slice if it makes the first slice too large. The contract should already assume persistence exists so the implementation does not paint itself into a single-process corner.
 

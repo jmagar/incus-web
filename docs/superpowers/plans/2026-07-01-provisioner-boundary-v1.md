@@ -1,27 +1,34 @@
-# Provisioner Boundary v1 Implementation Plan
+# Provisioner Contract And Inventory Adapter v1 Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build the first host provisioner boundary so the Next.js workspace inventory consumes a constrained provisioner contract instead of hardcoded runtime constants.
+**Goal:** Build the Next.js-side provisioner contract/client boundary so the workspace inventory consumes a constrained `provisioner.v1` facade instead of hardcoded runtime constants. This is a contract-prep PR, not the privileged host daemon PR.
 
-**Architecture:** Add focused TypeScript contract schemas under `apps/web/lib/provisioner`, then build a local client with a mockable transport and a host-script adapter for current prototype status. Wire workspace inventory through `GetWorkspaceStatus` while preserving the existing owner-gated prototype behavior and fail-closed auth posture.
+**Architecture:** Add focused TypeScript contract schemas under `apps/web/lib/provisioner`, then build a local client with a mockable transport and a static prototype status adapter for the current single-container prototype. Wire workspace inventory through `GetWorkspaceStatus` while preserving owner-gated prototype behavior and fail-closed auth posture. The future host-local transport must replace this adapter without changing workspace inventory callers.
 
-**Tech Stack:** Next.js 16, React 19, TypeScript, Vitest, Node child-process APIs, existing shell helpers in `scripts/`, Aurora UI already installed.
+**Tech Stack:** Next.js 16, React 19, TypeScript, Vitest, Aurora UI already installed.
 
 ## Global Constraints
 
 - Contract version is exactly `provisioner.v1`.
 - V1 command set is limited to `CreateWorkspace`, `StartWorkspace`, `StopWorkspace`, `RestartWorkspace`, `GetWorkspaceStatus`, and `RunSetup`.
 - Next.js server code must not shell out to `incus`, `zfs`, or setup scripts from request handlers.
+- This slice must not implement or expose `CreateWorkspace`, lifecycle mutation, or `RunSetup` browser routes.
+- Mutation commands remain disabled until a real host-local transport, service authentication, metadata revalidation, and redacted operation store exist.
 - Hosted workspaces remain `security.privileged=false`.
 - Hosted workspaces keep `security.nesting=true`.
 - Shifted workspace disk mounts remain the runtime default; CI may use unshifted disposable mounts only for runner compatibility.
 - Raw Incus stderr, raw setup logs, secret material, and host paths must not be returned directly to browser clients.
 - Secret-bearing fields must be redacted from logs and operation records.
+- Hosted v1 `dotfilesRepo` accepts only canonical GitHub HTTPS repos: `https://github.com/<owner>/<repo>` or `https://github.com/<owner>/<repo>.git`.
+- SSH repo forms, GitHub shorthand, and non-GitHub hosts require an explicit future host policy and are rejected in this slice.
+- Dotfiles are executable code inside the same personal workspace trust boundary; they are not safe to run for collaborators sharing the same workspace unless that user explicitly trusts the workspace owner.
 - `dotfilesRepo` max length is 512 characters.
-- `ageKey.value` max length is 200000 characters and must contain `AGE-SECRET-KEY-`.
+- `ageKey.value` max length is 200000 characters and must contain valid line-oriented age identity material.
+- `ageKey.persistEncrypted=true` is rejected unless host policy explicitly enables encrypted-at-rest key persistence.
 - Lifecycle command default timeout is 180 seconds.
 - Setup command default timeout is 1200 seconds.
+- Static prototype mode must be explicit via `INCUS_WEB_PROVISIONER_MODE=prototype-static`; production must not silently treat a static adapter as a real host provisioner.
 - Use Aurora tokens/components for UI changes; this plan should not add new visual design work.
 
 ---
@@ -33,7 +40,7 @@
   - Exports `validateProvisionerCommand`, `redactProvisionerCommand`, `isProvisionerCommandType`, and constants used by tests and clients.
 
 - Create `apps/web/lib/provisioner/client.ts`
-  - Defines `ProvisionerClient`, `ProvisionerTransport`, `createProvisionerClient`, and `createMockProvisionerClient`.
+  - Defines `ProvisionerClient`, `ProvisionerTransport`, `createProvisionerClient`, and `createStaticPrototypeStatusClient`.
   - Keeps transport abstract so HTTP/Unix socket can be added without changing workspace inventory.
 
 - Create `apps/web/lib/provisioner/status-adapter.ts`
@@ -73,9 +80,13 @@
   - `type WorkspaceRuntimeStatus`
   - `type ProvisionerError`
   - `function validateProvisionerCommand(command: unknown): ValidationResult<ProvisionerCommand<unknown>>`
+  - `function validateWorkspaceRuntimeStatus(status: unknown, workspace: ProvisionerWorkspaceRef): ValidationResult<WorkspaceRuntimeStatus>`
+  - `function validateProvisionerOperation<TResult>(operation: unknown, workspace: ProvisionerWorkspaceRef, type: ProvisionerCommandType): ValidationResult<ProvisionerOperation<TResult>>`
   - `function redactProvisionerCommand<T>(command: ProvisionerCommand<T>): ProvisionerCommand<unknown>`
+  - `function redactProvisionerOperation<T>(operation: ProvisionerOperation<T>): ProvisionerOperation<unknown>`
+  - `function redactSetupExcerpt(value: string): string`
   - `function validateGeneratedName(value: string, prefix: "user" | "ws"): boolean`
-  - `function validateSetupPayload(payload: unknown): ValidationResult<RunSetupPayload>`
+  - `function validateSetupPayload(payload: unknown, policy?: SetupValidationPolicy): ValidationResult<RunSetupPayload>`
 - Consumes:
   - No prior task output.
 
@@ -89,10 +100,15 @@ import { describe, expect, it } from "vitest";
 import {
   PROVISIONER_CONTRACT_VERSION,
   redactProvisionerCommand,
+  redactProvisionerOperation,
+  redactSetupExcerpt,
   validateGeneratedName,
+  validateProvisionerOperation,
   validateProvisionerCommand,
   validateSetupPayload,
+  validateWorkspaceRuntimeStatus,
   type ProvisionerCommand,
+  type ProvisionerOperation,
   type RunSetupPayload,
 } from "@/lib/provisioner/contracts";
 
@@ -164,7 +180,7 @@ describe("provisioner contract validators", () => {
 
   it("validates setup payload constraints", () => {
     const validPayload: RunSetupPayload = {
-      dotfilesRepo: "git@github.com:jmagar/dotfiles.git",
+      dotfilesRepo: "https://github.com/jmagar/dotfiles.git",
       ageKey: {
         value: "AGE-SECRET-KEY-1234567890",
         persistEncrypted: false,
@@ -174,6 +190,10 @@ describe("provisioner contract validators", () => {
 
     expect(validateSetupPayload(validPayload).ok).toBe(true);
     expect(validateSetupPayload({ dotfilesRepo: "https://github.com/jmagar/dotfiles.git", skipAptScripts: true }).ok).toBe(true);
+    expect(validateSetupPayload({ dotfilesRepo: "git@github.com:jmagar/dotfiles.git", skipAptScripts: true })).toMatchObject({
+      ok: false,
+      error: { code: "invalid_input" },
+    });
     expect(validateSetupPayload({ dotfilesRepo: "x".repeat(513), skipAptScripts: true })).toMatchObject({
       ok: false,
       error: { code: "invalid_input" },
@@ -188,12 +208,98 @@ describe("provisioner contract validators", () => {
     });
   });
 
+  it("validates setup payloads through the command envelope", () => {
+    expect(
+      validateProvisionerCommand({
+        ...baseCommand,
+        type: "RunSetup",
+        payload: {
+          ageKey: { value: "not-an-age-key", persistEncrypted: false },
+          skipAptScripts: true,
+        },
+      }),
+    ).toMatchObject({
+      ok: false,
+      error: { code: "invalid_input" },
+    });
+  });
+
+  it("rejects age key persistence unless policy enables it", () => {
+    const payload: RunSetupPayload = {
+      ageKey: {
+        value: "AGE-SECRET-KEY-1234567890",
+        persistEncrypted: true,
+      },
+      skipAptScripts: true,
+    };
+
+    expect(validateSetupPayload(payload)).toMatchObject({
+      ok: false,
+      error: { code: "invalid_input" },
+    });
+    expect(validateSetupPayload(payload, { allowAgeKeyPersistence: true }).ok).toBe(true);
+  });
+
+  it("validates returned status tuples against the requested workspace", () => {
+    expect(
+      validateWorkspaceRuntimeStatus(
+        {
+          workspaceId: "workspace-1",
+          state: "running",
+          incusProject: "user-abc123",
+          incusContainer: "ws-def456",
+          lastCheckedAt: "2026-07-01T00:00:00.000Z",
+        },
+        baseCommand.workspace,
+      ).ok,
+    ).toBe(true);
+
+    expect(
+      validateWorkspaceRuntimeStatus(
+        {
+          workspaceId: "workspace-2",
+          state: "running",
+          incusProject: "user-other",
+          incusContainer: "ws-other",
+          lastCheckedAt: "2026-07-01T00:00:00.000Z",
+        },
+        baseCommand.workspace,
+      ),
+    ).toMatchObject({
+      ok: false,
+      error: { code: "metadata_mismatch" },
+    });
+  });
+
+  it("validates operation envelopes for requested type and workspace", () => {
+    const operation: ProvisionerOperation = {
+      id: "op-1",
+      requestId: "req-123",
+      type: "GetWorkspaceStatus",
+      workspaceId: "workspace-1",
+      status: "succeeded",
+      result: {
+        workspaceId: "workspace-1",
+        state: "running",
+        incusProject: "user-abc123",
+        incusContainer: "ws-def456",
+        lastCheckedAt: "2026-07-01T00:00:00.000Z",
+      },
+    };
+
+    expect(validateProvisionerOperation(operation, baseCommand.workspace, "GetWorkspaceStatus").ok).toBe(true);
+    expect(validateProvisionerOperation({ ...operation, workspaceId: "workspace-2" }, baseCommand.workspace, "GetWorkspaceStatus")).toMatchObject({
+      ok: false,
+      error: { code: "metadata_mismatch" },
+    });
+  });
+
   it("redacts age key material from commands", () => {
     const command: ProvisionerCommand<RunSetupPayload> = {
       ...baseCommand,
       type: "RunSetup",
       payload: {
-        dotfilesRepo: "git@github.com:jmagar/dotfiles.git",
+        dotfilesRepo: "https://github.com/jmagar/dotfiles.git",
         ageKey: {
           value: "AGE-SECRET-KEY-super-secret",
           persistEncrypted: false,
@@ -206,13 +312,41 @@ describe("provisioner contract validators", () => {
       "super-secret",
     );
     expect(redactProvisionerCommand(command).payload).toMatchObject({
-      dotfilesRepo: "git@github.com:jmagar/dotfiles.git",
+      dotfilesRepo: "https://github.com/jmagar/dotfiles.git",
       ageKey: {
         value: "[REDACTED]",
         persistEncrypted: false,
       },
       skipAptScripts: true,
     });
+  });
+
+  it("redacts secret material, bearer tokens, and host paths from operations", () => {
+    const operation: ProvisionerOperation = {
+      id: "op-1",
+      requestId: "req-123",
+      type: "RunSetup",
+      workspaceId: "workspace-1",
+      status: "failed",
+      error: {
+        code: "setup_failed",
+        message:
+          "failed with AGE-SECRET-KEY-super-secret and Bearer token in /home/agent/.config",
+        retryable: false,
+        details: {
+          stderr: "incus error from /var/lib/incus with AGE-SECRET-KEY-super-secret",
+        },
+      },
+    };
+
+    const redacted = redactProvisionerOperation(operation);
+
+    expect(JSON.stringify(redacted)).not.toContain("super-secret");
+    expect(JSON.stringify(redacted)).not.toContain("Bearer token");
+    expect(JSON.stringify(redacted)).not.toContain("/var/lib/incus");
+    expect(redactSetupExcerpt("raw /home/agent path AGE-SECRET-KEY-super-secret")).toBe(
+      "raw [REDACTED_PATH] path [REDACTED_AGE_KEY]",
+    );
   });
 });
 ```
@@ -337,9 +471,18 @@ export type WorkspaceRuntimeStatus = {
   rootDiskUsedBytes?: number;
   rootDiskLimitBytes?: number;
   loadAverage?: [number, number, number];
-  setupPhase?: string;
+  setupPhase?: ProvisionerSetupPhase;
   lastCheckedAt: string;
 };
+
+export type ProvisionerSetupPhase =
+  | "not_configured"
+  | "queued"
+  | "installing_mise"
+  | "applying_dotfiles"
+  | "checking_tools"
+  | "ready"
+  | "failed";
 
 export type CreateWorkspacePayload = {
   templateVersion: string;
@@ -363,6 +506,10 @@ export type RunSetupPayload = {
     persistEncrypted: boolean;
   };
   skipAptScripts: boolean;
+};
+
+export type SetupValidationPolicy = {
+  allowAgeKeyPersistence?: boolean;
 };
 
 export function isProvisionerCommandType(
@@ -407,11 +554,18 @@ export function validateProvisionerCommand(
   if (!isWorkspaceRef(command.workspace)) {
     return invalid("workspace ref is invalid");
   }
+  if (command.type === "RunSetup") {
+    const payload = validateSetupPayload(command.payload);
+    if (!payload.ok) {
+      return payload;
+    }
+  }
   return { ok: true, value: command as ProvisionerCommand<unknown> };
 }
 
 export function validateSetupPayload(
   payload: unknown,
+  policy: SetupValidationPolicy = {},
 ): ValidationResult<RunSetupPayload> {
   if (!isRecord(payload)) {
     return invalid("setup payload must be an object");
@@ -435,15 +589,73 @@ export function validateSetupPayload(
     if (
       typeof payload.ageKey.value !== "string" ||
       payload.ageKey.value.length > 200000 ||
-      !payload.ageKey.value.includes("AGE-SECRET-KEY-")
+      !isAgeIdentity(payload.ageKey.value)
     ) {
       return invalid("age key did not look like an age identity file");
     }
     if (typeof payload.ageKey.persistEncrypted !== "boolean") {
       return invalid("ageKey.persistEncrypted must be a boolean");
     }
+    if (payload.ageKey.persistEncrypted && !policy.allowAgeKeyPersistence) {
+      return invalid("age key persistence is not enabled by host policy");
+    }
   }
   return { ok: true, value: payload as RunSetupPayload };
+}
+
+export function validateWorkspaceRuntimeStatus(
+  status: unknown,
+  workspace: ProvisionerWorkspaceRef,
+): ValidationResult<WorkspaceRuntimeStatus> {
+  if (!isRecord(status)) {
+    return invalid("workspace status must be an object");
+  }
+  if (
+    status.workspaceId !== workspace.id ||
+    status.incusProject !== workspace.incusProject ||
+    status.incusContainer !== workspace.incusContainer
+  ) {
+    return metadataMismatch("workspace status tuple did not match request");
+  }
+  if (!isWorkspaceState(status.state)) {
+    return invalid("workspace state is invalid");
+  }
+  if (
+    typeof status.lastCheckedAt !== "string" ||
+    Number.isNaN(Date.parse(status.lastCheckedAt))
+  ) {
+    return invalid("lastCheckedAt is invalid");
+  }
+  if (
+    status.setupPhase !== undefined &&
+    !isProvisionerSetupPhase(status.setupPhase)
+  ) {
+    return invalid("setupPhase is invalid");
+  }
+  return { ok: true, value: status as WorkspaceRuntimeStatus };
+}
+
+export function validateProvisionerOperation<TResult>(
+  operation: unknown,
+  workspace: ProvisionerWorkspaceRef,
+  type: ProvisionerCommandType,
+): ValidationResult<ProvisionerOperation<TResult>> {
+  if (!isRecord(operation)) {
+    return invalid("operation must be an object");
+  }
+  if (operation.type !== type || operation.workspaceId !== workspace.id) {
+    return metadataMismatch("operation tuple did not match request");
+  }
+  if (!isOperationStatus(operation.status)) {
+    return invalid("operation status is invalid");
+  }
+  if (operation.status === "succeeded" && operation.result !== undefined) {
+    const status = validateWorkspaceRuntimeStatus(operation.result, workspace);
+    if (!status.ok) {
+      return status;
+    }
+  }
+  return { ok: true, value: operation as ProvisionerOperation<TResult> };
 }
 
 export function redactProvisionerCommand<TPayload>(
@@ -462,6 +674,25 @@ export function redactProvisionerCommand<TPayload>(
   return {
     ...command,
     payload,
+  };
+}
+
+export function redactProvisionerOperation<TResult>(
+  operation: ProvisionerOperation<TResult>,
+): ProvisionerOperation<unknown> {
+  const error = operation.error
+    ? {
+        ...operation.error,
+        message: redactSetupExcerpt(operation.error.message),
+        details: operation.error.details
+          ? sanitizeDetails(operation.error.details)
+          : undefined,
+      }
+    : undefined;
+  return {
+    ...operation,
+    result: sanitizeValue(operation.result),
+    error,
   };
 }
 
@@ -493,18 +724,99 @@ function isWorkspaceRef(value: unknown): value is ProvisionerWorkspaceRef {
 }
 
 function isAllowedGitRepo(value: string): boolean {
-  return (
-    /^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:\.git)?$/.test(
-      value,
-    ) ||
-    /^git@github\.com:[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:\.git)?$/.test(
-      value,
-    )
+  return /^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:\.git)?$/.test(
+    value,
   );
+}
+
+function isAgeIdentity(value: string): boolean {
+  return value
+    .split(/\r?\n/)
+    .some((line) => /^AGE-SECRET-KEY-[A-Z0-9]+/.test(line.trim()));
+}
+
+function isWorkspaceState(value: unknown): value is ProvisionerWorkspaceState {
+  return (
+    typeof value === "string" &&
+    [
+      "creating",
+      "stopped",
+      "starting",
+      "running",
+      "stopping",
+      "restarting",
+      "setting_up",
+      "degraded",
+      "failed",
+    ].includes(value)
+  );
+}
+
+function isProvisionerSetupPhase(
+  value: unknown,
+): value is ProvisionerSetupPhase {
+  return (
+    typeof value === "string" &&
+    [
+      "not_configured",
+      "queued",
+      "installing_mise",
+      "applying_dotfiles",
+      "checking_tools",
+      "ready",
+      "failed",
+    ].includes(value)
+  );
+}
+
+function isOperationStatus(value: unknown): value is OperationStatus {
+  return (
+    typeof value === "string" &&
+    ["queued", "running", "succeeded", "failed"].includes(value)
+  );
+}
+
+export function redactSetupExcerpt(value: string): string {
+  return value
+    .replace(/AGE-SECRET-KEY-[A-Z0-9]+/gi, "[REDACTED_AGE_KEY]")
+    .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, "[REDACTED_TOKEN]")
+    .replace(/\/(?:home|srv|mnt|var\/lib\/incus|var\/snap\/lxd)[^\s]*/g, "[REDACTED_PATH]");
+}
+
+function sanitizeDetails(
+  details: Record<string, unknown>,
+): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(details).map(([key, value]) => [key, sanitizeValue(value)]),
+  );
+}
+
+function sanitizeValue(value: unknown): unknown {
+  if (typeof value === "string") {
+    return redactSetupExcerpt(value);
+  }
+  if (Array.isArray(value)) {
+    return value.map(sanitizeValue);
+  }
+  if (isRecord(value)) {
+    return sanitizeDetails(value);
+  }
+  return value;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function metadataMismatch(message: string): ValidationResult<never> {
+  return {
+    ok: false,
+    error: {
+      code: "metadata_mismatch",
+      message,
+      retryable: false,
+    },
+  };
 }
 
 function invalid(message: string): ValidationResult<never> {
@@ -551,7 +863,7 @@ git commit -m "feat(web): add provisioner contract validators"
   - `type ProvisionerTransport`
   - `type ProvisionerClient`
   - `function createProvisionerClient(transport: ProvisionerTransport): ProvisionerClient`
-  - `function createMockProvisionerClient(status: WorkspaceRuntimeStatus): ProvisionerClient`
+  - `function createStaticPrototypeStatusClient(status: WorkspaceRuntimeStatus): ProvisionerClient`
 
 - [ ] **Step 1: Write failing client tests**
 
@@ -566,7 +878,7 @@ import {
   type WorkspaceRuntimeStatus,
 } from "@/lib/provisioner/contracts";
 import {
-  createMockProvisionerClient,
+  createStaticPrototypeStatusClient,
   createProvisionerClient,
   type ProvisionerTransport,
 } from "@/lib/provisioner/client";
@@ -627,24 +939,38 @@ describe("provisioner client", () => {
     const operation = await client.send({
       ...command,
       type: "RawIncusExec",
-    } as ProvisionerCommand<Record<string, never>>);
+    });
 
     expect(send).not.toHaveBeenCalled();
     expect(operation).toMatchObject({
       type: "GetWorkspaceStatus",
+      workspaceId: "unknown",
       status: "failed",
       error: { code: "invalid_input" },
     });
   });
 
-  it("creates a mock status client for local inventory tests", async () => {
-    const client = createMockProvisionerClient(status);
+  it("creates a static prototype status client for local inventory tests", async () => {
+    const client = createStaticPrototypeStatusClient(status);
     const operation = await client.send(command);
 
     expect(operation).toMatchObject({
       id: "mock-op-req-1",
       status: "succeeded",
       result: { workspaceId: "workspace-1", state: "running" },
+    });
+  });
+
+  it("rejects non-status commands in the static prototype status client", async () => {
+    const client = createStaticPrototypeStatusClient(status);
+    const operation = await client.send({
+      ...command,
+      type: "StartWorkspace",
+    });
+
+    expect(operation).toMatchObject({
+      status: "failed",
+      error: { code: "invalid_input" },
     });
   });
 });
@@ -679,8 +1005,8 @@ export type ProvisionerTransport = {
 };
 
 export type ProvisionerClient = {
-  send<TPayload, TResult>(
-    command: ProvisionerCommand<TPayload>,
+  send<TResult = unknown>(
+    command: unknown,
   ): Promise<ProvisionerOperation<TResult>>;
 };
 
@@ -688,27 +1014,41 @@ export function createProvisionerClient(
   transport: ProvisionerTransport,
 ): ProvisionerClient {
   return {
-    async send<TPayload, TResult>(
-      command: ProvisionerCommand<TPayload>,
+    async send<TResult>(
+      command: unknown,
     ): Promise<ProvisionerOperation<TResult>> {
       const validation = validateProvisionerCommand(command);
       if (!validation.ok) {
-        return failedOperation(command, validation.error.message);
+        return failedOperation(validation.error.message);
       }
-      return transport.send<TPayload, TResult>(command);
+      return transport.send<unknown, TResult>(validation.value);
     },
   };
 }
 
-export function createMockProvisionerClient(
+export function createStaticPrototypeStatusClient(
   status: WorkspaceRuntimeStatus,
 ): ProvisionerClient {
   return createProvisionerClient({
     async send<TPayload, TResult>(
       command: ProvisionerCommand<TPayload>,
     ): Promise<ProvisionerOperation<TResult>> {
+      if (command.type !== "GetWorkspaceStatus") {
+        return {
+          id: `static-prototype-op-${command.requestId}`,
+          requestId: command.requestId,
+          type: command.type,
+          workspaceId: command.workspace.id,
+          status: "failed",
+          error: {
+            code: "invalid_input",
+            message: "static prototype status client only supports GetWorkspaceStatus",
+            retryable: false,
+          },
+        };
+      }
       return {
-        id: `mock-op-${command.requestId}`,
+        id: `static-prototype-op-${command.requestId}`,
         requestId: command.requestId,
         type: command.type,
         workspaceId: command.workspace.id,
@@ -722,14 +1062,13 @@ export function createMockProvisionerClient(
 }
 
 function failedOperation<TResult>(
-  command: Pick<ProvisionerCommand<unknown>, "requestId" | "workspace">,
   message: string,
 ): ProvisionerOperation<TResult> {
   return {
-    id: `failed-${command.requestId}`,
-    requestId: command.requestId,
+    id: `failed-${crypto.randomUUID()}`,
+    requestId: "unknown",
     type: "GetWorkspaceStatus",
-    workspaceId: command.workspace.id,
+    workspaceId: "unknown",
     status: "failed",
     error: {
       code: "invalid_input",
@@ -1001,7 +1340,8 @@ git commit -m "feat(web): map provisioner status to workspaces"
 
 **Interfaces:**
 - Consumes:
-  - `createMockProvisionerClient`, `ProvisionerClient` from Task 2.
+  - `createStaticPrototypeStatusClient`, `ProvisionerClient` from Task 2.
+  - `validateProvisionerOperation` from Task 1.
   - `buildPrototypeWorkspaceRef`, `prototypeRuntimeStatus`, `statusToWorkspace` from Task 3.
 - Produces:
   - `function getWorkspaceInventory(actor: ActorContext, client?: ProvisionerClient): Promise<WorkspaceInventory>`
@@ -1011,8 +1351,20 @@ git commit -m "feat(web): map provisioner status to workspaces"
 Modify `apps/web/lib/workspaces/provisioner.test.ts` by adding these imports:
 
 ```ts
-import { createMockProvisionerClient } from "@/lib/provisioner/client";
+import { createStaticPrototypeStatusClient } from "@/lib/provisioner/client";
 import type { WorkspaceRuntimeStatus } from "@/lib/provisioner/contracts";
+```
+
+Update the existing `"returns the current incus-web workspace read-only inventory"` expectation so it expects generated prototype names:
+
+```ts
+    expect(inventory.workspaces[0]).toMatchObject({
+      name: "incus-web",
+      incusProject: "user-incus-web",
+      incusContainer: "ws-incus-web",
+      state: "running",
+      ownerUserId: "oidc:owner@example.com",
+    });
 ```
 
 Add these tests inside the existing `describe` block:
@@ -1040,7 +1392,7 @@ Add these tests inside the existing `describe` block:
 
     const inventory = await getWorkspaceInventory(
       actor,
-      createMockProvisionerClient(status),
+      createStaticPrototypeStatusClient(status),
     );
 
     expect(inventory.workspaces[0]).toMatchObject({
@@ -1068,6 +1420,108 @@ Add these tests inside the existing `describe` block:
     expect(client.send).not.toHaveBeenCalled();
     expect(inventory.workspaces).toHaveLength(0);
   });
+
+  it("returns no workspace when provisioner status fails", async () => {
+    process.env.INCUS_WEB_WORKSPACE_OWNER_SUBJECT = "owner-subject";
+    const actor = getActorFromHeaders(
+      new Headers({
+        "x-auth-request-email": "owner@example.com",
+        "x-auth-request-subject": "owner-subject",
+      }),
+    );
+    const client = {
+      send: vi.fn().mockResolvedValue({
+        id: "op-1",
+        requestId: "req-1",
+        type: "GetWorkspaceStatus",
+        workspaceId: "workspace-incus-web",
+        status: "failed",
+        error: {
+          code: "incus_unavailable",
+          message: "raw /var/lib/incus path should not be rendered",
+          retryable: true,
+        },
+      }),
+    };
+
+    const inventory = await getWorkspaceInventory(actor, client);
+
+    expect(inventory.workspaces).toHaveLength(0);
+  });
+
+  it("returns no workspace when provisioner status tuple is mismatched", async () => {
+    process.env.INCUS_WEB_WORKSPACE_OWNER_SUBJECT = "owner-subject";
+    const actor = getActorFromHeaders(
+      new Headers({
+        "x-auth-request-email": "owner@example.com",
+        "x-auth-request-subject": "owner-subject",
+      }),
+    );
+    const client = {
+      send: vi.fn().mockResolvedValue({
+        id: "op-1",
+        requestId: "req-1",
+        type: "GetWorkspaceStatus",
+        workspaceId: "workspace-incus-web",
+        status: "succeeded",
+        result: {
+          workspaceId: "workspace-other",
+          state: "running",
+          incusProject: "user-other",
+          incusContainer: "ws-other",
+          lastCheckedAt: "2026-07-01T00:00:00.000Z",
+        },
+      }),
+    };
+
+    const inventory = await getWorkspaceInventory(actor, client);
+
+    expect(inventory.workspaces).toHaveLength(0);
+  });
+
+  it("returns no workspace when provisioner status result is malformed", async () => {
+    process.env.INCUS_WEB_WORKSPACE_OWNER_SUBJECT = "owner-subject";
+    const actor = getActorFromHeaders(
+      new Headers({
+        "x-auth-request-email": "owner@example.com",
+        "x-auth-request-subject": "owner-subject",
+      }),
+    );
+    const client = {
+      send: vi.fn().mockResolvedValue({
+        id: "op-1",
+        requestId: "req-1",
+        type: "GetWorkspaceStatus",
+        workspaceId: "workspace-incus-web",
+        status: "succeeded",
+        result: {
+          workspaceId: "workspace-incus-web",
+          state: "running",
+        },
+      }),
+    };
+
+    const inventory = await getWorkspaceInventory(actor, client);
+
+    expect(inventory.workspaces).toHaveLength(0);
+  });
+
+  it("requires subject-configured ownership in production", async () => {
+    const originalNodeEnv = process.env.NODE_ENV;
+    vi.stubEnv("NODE_ENV", "production");
+    process.env.INCUS_WEB_WORKSPACE_OWNER_EMAIL = "owner@example.com";
+    const actor = getActorFromHeaders(
+      new Headers({
+        "x-auth-request-email": "owner@example.com",
+        "x-auth-request-subject": "owner-subject",
+      }),
+    );
+
+    const inventory = await getWorkspaceInventory(actor);
+
+    expect(inventory.workspaces).toHaveLength(0);
+    vi.stubEnv("NODE_ENV", originalNodeEnv);
+  });
 ```
 
 - [ ] **Step 2: Run inventory tests to verify they fail**
@@ -1089,9 +1543,10 @@ import type { ActorContext, WorkspaceInventory } from "@/lib/workspaces/types";
 import {
   PROVISIONER_CONTRACT_VERSION,
   type WorkspaceRuntimeStatus,
+  validateProvisionerOperation,
 } from "@/lib/provisioner/contracts";
 import {
-  createMockProvisionerClient,
+  createStaticPrototypeStatusClient,
   type ProvisionerClient,
 } from "@/lib/provisioner/client";
 import {
@@ -1101,14 +1556,59 @@ import {
 } from "@/lib/provisioner/status-adapter";
 ```
 
-Keep the existing `ConfiguredOwner`, `configuredOwner()`, and `actorMatchesOwner()` logic.
+Keep the existing `ConfiguredOwner` and `actorMatchesOwner()` shape, but update `configuredOwner()` so production requires `INCUS_WEB_WORKSPACE_OWNER_SUBJECT`. Email owner fallback remains available only for local prototype/development mode:
+
+```ts
+function configuredOwner(): ConfiguredOwner | undefined {
+  const subject = process.env.INCUS_WEB_WORKSPACE_OWNER_SUBJECT?.trim();
+  if (subject) return { userId: `oidc:${subject}` };
+
+  if (process.env.NODE_ENV === "production") {
+    return undefined;
+  }
+
+  const email = process.env.INCUS_WEB_WORKSPACE_OWNER_EMAIL?.trim();
+  if (email) return { userId: `oidc:${email}`, email: email.toLowerCase() };
+
+  if (process.env.INCUS_WEB_ALLOW_DEV_AUTH === "1") {
+    return {
+      userId: "oidc:dev@incus-web.local",
+      email: "dev@incus-web.local",
+    };
+  }
+
+  return undefined;
+}
+```
 
 Replace `currentWorkspace()` with:
 
 ```ts
 function defaultProvisionerClient(ownerUserId: string): ProvisionerClient {
   const workspace = buildPrototypeWorkspaceRef(ownerUserId);
-  return createMockProvisionerClient(prototypeRuntimeStatus(workspace.id));
+  if (
+    process.env.INCUS_WEB_PROVISIONER_MODE === "prototype-static" ||
+    process.env.NODE_ENV !== "production"
+  ) {
+    return createStaticPrototypeStatusClient(prototypeRuntimeStatus(workspace.id));
+  }
+
+  return {
+    async send() {
+      return {
+        id: "missing-provisioner",
+        requestId: "unknown",
+        type: "GetWorkspaceStatus",
+        workspaceId: workspace.id,
+        status: "failed",
+        error: {
+          code: "unauthenticated_service",
+          message: "host provisioner transport is not configured",
+          retryable: false,
+        },
+      };
+    },
+  };
 }
 ```
 
@@ -1126,7 +1626,7 @@ export async function getWorkspaceInventory(
 
   const workspace = buildPrototypeWorkspaceRef(owner.userId);
   const provisioner = client ?? defaultProvisionerClient(owner.userId);
-  const operation = await provisioner.send<Record<string, never>, WorkspaceRuntimeStatus>({
+  const operation = await provisioner.send<WorkspaceRuntimeStatus>({
     version: PROVISIONER_CONTRACT_VERSION,
     requestId: actor.requestId,
     type: "GetWorkspaceStatus",
@@ -1143,10 +1643,18 @@ export async function getWorkspaceInventory(
   if (operation.status !== "succeeded" || !operation.result) {
     return { actor, workspaces: [] };
   }
+  const validated = validateProvisionerOperation<WorkspaceRuntimeStatus>(
+    operation,
+    workspace,
+    "GetWorkspaceStatus",
+  );
+  if (!validated.ok || !validated.value.result) {
+    return { actor, workspaces: [] };
+  }
 
   return {
     actor,
-    workspaces: [statusToWorkspace(operation.result, owner.userId)],
+    workspaces: [statusToWorkspace(validated.value.result, owner.userId)],
   };
 }
 ```
@@ -1240,6 +1748,66 @@ Run:
 bash tests/deploy_static_tests.sh
 bash -n deploy.sh scripts/incus-web-lib.sh scripts/build-image.sh scripts/smoke-image.sh tests/deploy_static_tests.sh
 shellcheck deploy.sh scripts/incus-web-lib.sh scripts/build-image.sh scripts/smoke-image.sh tests/deploy_static_tests.sh
+node <<'NODE'
+const fs = require("fs");
+const path = require("path");
+const forbidden = [
+  "child_process",
+  "spawn(",
+  "exec(",
+  "incus ",
+  "zfs ",
+  "scripts/",
+  "/var/snap/lxd",
+  "/var/lib/incus",
+  "/run/incus",
+];
+const allowed = new Set([
+  "apps/web/lib/provisioner/contracts.test.ts",
+  "apps/web/lib/workspaces/provisioner.test.ts",
+]);
+const hits = [];
+function walk(dir) {
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const file = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      if (!["node_modules", ".next"].includes(entry.name)) walk(file);
+      continue;
+    }
+    if (!/\.(ts|tsx|js|jsx)$/.test(entry.name)) continue;
+    const rel = path.relative(process.cwd(), file);
+    if (allowed.has(rel)) continue;
+    const text = fs.readFileSync(file, "utf8");
+    for (const needle of forbidden) {
+      if (text.includes(needle)) hits.push(`${rel}: ${needle}`);
+    }
+  }
+}
+walk("apps/web");
+if (hits.length) {
+  console.error(hits.join("\n"));
+  process.exit(1);
+}
+NODE
+node <<'NODE'
+const fs = require("fs");
+const text = [
+  fs.existsSync("deploy.sh") ? fs.readFileSync("deploy.sh", "utf8") : "",
+  fs.existsSync("scripts/incus-web-lib.sh") ? fs.readFileSync("scripts/incus-web-lib.sh", "utf8") : "",
+  fs.existsSync("incus-web-profile.yaml") ? fs.readFileSync("incus-web-profile.yaml", "utf8") : "",
+  fs.existsSync("distrobuilder.yaml") ? fs.readFileSync("distrobuilder.yaml", "utf8") : "",
+].join("\n");
+for (const expected of [
+  'security.nesting: "true"',
+  'security.privileged: "false"',
+  'shift: "true"',
+]) {
+  if (!text.includes(expected)) {
+    console.error(`missing runtime profile invariant: ${expected}`);
+    process.exit(1);
+  }
+}
+NODE
 git diff --check
 ```
 
@@ -1258,16 +1826,17 @@ git commit -m "docs: link provisioner implementation entry points"
 
 Spec coverage:
 
-- Host mutation boundary: Task 2 and Task 4 introduce the client boundary; Task 5 documents it.
-- Command envelope and validation: Task 1.
-- Operation shape: Task 2.
+- Next.js-side provisioner facade: Tasks 2 and 4 introduce the client boundary; Task 5 documents that the real host transport remains a follow-up.
+- Command envelope, payload validation, tuple validation, and redaction: Task 1.
+- Operation shape and validation: Tasks 1 and 2.
 - Status inventory integration: Tasks 3 and 4.
-- Setup validation and redaction: Task 1.
-- Tests: every implementation task starts with failing tests and ends with focused tests.
+- Setup validation, dotfiles repo policy, age key persistence policy, and redaction: Task 1.
+- Tests: every implementation task starts with failing tests and ends with focused tests; Task 5 adds full web gates, forbidden-call scan, and runtime profile invariant checks.
 
 Scope decision:
 
-- This plan intentionally does not build the privileged host daemon, terminal routing, durable database, org sharing, snapshots, or a queue worker. Those are separate follow-up slices after the TypeScript contract and inventory call boundary are proven.
+- This plan intentionally does not build the privileged host daemon, host-local transport, terminal routing, durable database, org sharing, snapshots, or a queue worker. Those are separate follow-up slices after the TypeScript contract and inventory call boundary are proven.
+- Static prototype mode is an explicit compatibility adapter, not a host security boundary.
 
 Placeholder scan:
 
