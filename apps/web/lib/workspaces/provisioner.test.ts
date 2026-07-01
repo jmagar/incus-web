@@ -71,6 +71,59 @@ describe("workspace inventory provisioner", () => {
     expect(actor.requestId).toBe("req-123");
   });
 
+  it("parses SWAG Authelia Remote-* identity headers", () => {
+    const actor = getActorFromHeaders(
+      new Headers({
+        "remote-email": "jmagar@example.com",
+        "remote-name": "Jacob Magar",
+        "remote-user": "jmagar",
+        "x-request-id": "req-swag",
+      }),
+    );
+
+    expect(actor.email).toBe("jmagar@example.com");
+    expect(actor.displayName).toBe("Jacob Magar");
+    expect(actor.oidcSubject).toBe("jmagar");
+    expect(actor.userId).toBe("oidc:jmagar");
+    expect(actor.requestId).toBe("req-swag");
+  });
+
+  it("uses remote-user as the display name when SWAG omits remote-name", () => {
+    const actor = getActorFromHeaders(
+      new Headers({
+        "remote-email": "jmagar@example.com",
+        "remote-user": "jmagar",
+      }),
+    );
+
+    expect(actor.displayName).toBe("jmagar");
+    expect(actor.oidcSubject).toBe("jmagar");
+    expect(actor.userId).toBe("oidc:jmagar");
+  });
+
+  it("requires the trusted proxy secret when configured", () => {
+    vi.stubEnv("INCUS_WEB_TRUSTED_PROXY_SECRET", "proxy-secret");
+
+    expect(() =>
+      getActorFromHeaders(
+        new Headers({
+          "remote-email": "jmagar@example.com",
+          "remote-user": "jmagar",
+        }),
+      ),
+    ).toThrow(AuthenticationRequiredError);
+
+    const actor = getActorFromHeaders(
+      new Headers({
+        "remote-email": "jmagar@example.com",
+        "remote-user": "jmagar",
+        "x-incus-web-proxy-secret": "proxy-secret",
+      }),
+    );
+
+    expect(actor.userId).toBe("oidc:jmagar");
+  });
+
   it("falls back to a local development actor without headers", () => {
     vi.stubEnv("INCUS_WEB_ALLOW_DEV_AUTH", "1");
     const actor = getActorFromHeaders(new Headers());
@@ -259,6 +312,65 @@ describe("workspace inventory provisioner", () => {
     expect(inventory.workspaces).toHaveLength(0);
   });
 
+  it("requires explicit authenticated owner mode for actor-scoped prototype ownership", async () => {
+    vi.stubEnv("INCUS_WEB_WORKSPACE_OWNER_MODE", "authenticated");
+    vi.stubEnv("INCUS_WEB_ALLOW_SHARED_PROTOTYPE", "1");
+    usePrototypeStaticMode();
+    const actor = getActorFromHeaders(
+      authHeaders({ email: "jacob@example.com", subject: "jacob" }),
+    );
+
+    const inventory = await getWorkspaceInventory(actor);
+
+    expect(inventory.workspaces).toHaveLength(1);
+    expect(inventory.workspaces[0]?.ownerUserId).toBe("oidc:jacob");
+  });
+
+  it("rejects authenticated owner mode without the shared prototype opt-in", async () => {
+    vi.stubEnv("INCUS_WEB_WORKSPACE_OWNER_MODE", "authenticated");
+    usePrototypeStaticMode();
+    const actor = getActorFromHeaders(
+      authHeaders({ email: "jacob@example.com", subject: "jacob" }),
+    );
+
+    const inventory = await getWorkspaceInventory(actor);
+
+    expect(inventory.workspaces).toHaveLength(0);
+    expect(inventory.provisionerError).toMatchObject({
+      code: "invalid_input",
+      message:
+        "INCUS_WEB_WORKSPACE_OWNER_MODE=authenticated requires INCUS_WEB_ALLOW_SHARED_PROTOTYPE=1",
+      workspaceId: "unknown",
+    });
+  });
+
+  it("does not implicitly assign the imported prototype to any signed-in actor", async () => {
+    usePrototypeStaticMode();
+    const actor = ownerActor();
+
+    const inventory = await getWorkspaceInventory(actor);
+
+    expect(inventory.workspaces).toHaveLength(0);
+  });
+
+  it("surfaces invalid owner mode as a configuration error", async () => {
+    vi.stubEnv("INCUS_WEB_WORKSPACE_OWNER_MODE", "typo");
+    const actor = ownerActor();
+    const client = {
+      send: vi.fn(),
+    };
+
+    const inventory = await getWorkspaceInventory(actor, client);
+
+    expect(client.send).not.toHaveBeenCalled();
+    expect(inventory.workspaces).toHaveLength(0);
+    expect(inventory.provisionerError).toMatchObject({
+      code: "invalid_input",
+      message: "INCUS_WEB_WORKSPACE_OWNER_MODE must be authenticated or none",
+      workspaceId: "unknown",
+    });
+  });
+
   it("returns no workspace when provisioner status fails", async () => {
     useOwnerSubject();
     const actor = ownerActor();
@@ -392,14 +504,63 @@ describe("workspace inventory provisioner", () => {
     });
   });
 
-  it("requires subject-configured ownership in production", async () => {
-    vi.stubEnv("NODE_ENV", "production");
-    useOwnerEmail();
+  it("surfaces invalid dashboard URL config after provisioner success", async () => {
+    useOwnerSubject();
+    vi.stubEnv("INCUS_WEB_TERMINAL_URL", "javascript:alert(1)");
     const actor = ownerActor();
+    const client = {
+      send: vi.fn().mockResolvedValue({
+        id: "op-url",
+        requestId: actor.requestId,
+        type: "GetWorkspaceStatus",
+        workspaceId: "workspace-incus-web",
+        status: "succeeded",
+        result: {
+          workspaceId: "workspace-incus-web",
+          state: "running",
+          incusProject: "default",
+          incusContainer: "incus-web",
+          lastCheckedAt: "2026-07-01T00:00:00.000Z",
+        },
+      }),
+    };
 
-    const inventory = await getWorkspaceInventory(actor);
+    const inventory = await getWorkspaceInventory(actor, client);
 
     expect(inventory.workspaces).toHaveLength(0);
+    expect(inventory.provisionerError).toMatchObject({
+      code: "invalid_input",
+      message: "INCUS_WEB_TERMINAL_URL must be a relative path or http(s) URL",
+      workspaceId: "workspace-incus-web",
+      operationId: "op-url",
+    });
+  });
+
+  it("uses authenticated ownership in production only when explicitly enabled", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("INCUS_WEB_WORKSPACE_OWNER_MODE", "authenticated");
+    vi.stubEnv("INCUS_WEB_ALLOW_SHARED_PROTOTYPE", "1");
+    const actor = getActorFromHeaders(authHeaders({ subject: "owner-subject" }));
+    const client = {
+      send: vi.fn().mockResolvedValue({
+        id: "op-prod",
+        requestId: actor.requestId,
+        type: "GetWorkspaceStatus",
+        workspaceId: "workspace-incus-web",
+        status: "succeeded",
+        result: {
+          workspaceId: "workspace-incus-web",
+          state: "running",
+          incusProject: "default",
+          incusContainer: "incus-web",
+          lastCheckedAt: "2026-07-01T00:00:00.000Z",
+        },
+      }),
+    };
+
+    const inventory = await getWorkspaceInventory(actor, client);
+
+    expect(inventory.workspaces[0]?.ownerUserId).toBe("oidc:owner-subject");
   });
 
   it("does not expose the shared prototype workspace to another actor", async () => {

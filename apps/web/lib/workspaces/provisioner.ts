@@ -27,25 +27,32 @@ type ConfiguredOwner = {
   email?: string;
 };
 
-function configuredOwner(): ConfiguredOwner | undefined {
+function configuredOwner(actor: ActorContext): ConfiguredOwner | undefined {
   const subject = process.env.INCUS_WEB_WORKSPACE_OWNER_SUBJECT?.trim();
   if (subject) return { userId: `oidc:${subject}` };
-
-  if (process.env.NODE_ENV === "production") {
-    return undefined;
-  }
 
   const email = process.env.INCUS_WEB_WORKSPACE_OWNER_EMAIL?.trim();
   if (email) return { userId: `oidc:${email}`, email: email.toLowerCase() };
 
-  if (process.env.INCUS_WEB_ALLOW_DEV_AUTH === "1") {
+  const ownerMode = process.env.INCUS_WEB_WORKSPACE_OWNER_MODE ?? "none";
+  if (ownerMode === "authenticated") {
+    if (process.env.INCUS_WEB_ALLOW_SHARED_PROTOTYPE !== "1") {
+      throw new Error(
+        "INCUS_WEB_WORKSPACE_OWNER_MODE=authenticated requires INCUS_WEB_ALLOW_SHARED_PROTOTYPE=1",
+      );
+    }
     return {
-      userId: "oidc:dev@incus-web.local",
-      email: "dev@incus-web.local",
+      userId: actor.userId,
+      email: actor.email.toLowerCase(),
     };
   }
+  if (ownerMode === "none") {
+    return undefined;
+  }
 
-  return undefined;
+  throw new Error(
+    "INCUS_WEB_WORKSPACE_OWNER_MODE must be authenticated or none",
+  );
 }
 
 function actorMatchesOwner(actor: ActorContext, owner: ConfiguredOwner) {
@@ -117,7 +124,17 @@ export async function getWorkspaceInventory(
   actor: ActorContext,
   client?: ProvisionerClient,
 ): Promise<WorkspaceInventory> {
-  const owner = configuredOwner();
+  let owner;
+  try {
+    owner = configuredOwner(actor);
+  } catch (error) {
+    return inventoryFailure(actor, "unknown", actor.requestId, {
+      code: "invalid_input",
+      message:
+        error instanceof Error ? error.message : "invalid workspace owner config",
+      retryable: false,
+    });
+  }
   if (!owner || !actorMatchesOwner(actor, owner)) {
     return { actor, workspaces: [] };
   }
@@ -177,10 +194,25 @@ export async function getWorkspaceInventory(
     });
   }
 
-  return {
-    actor,
-    workspaces: [statusToWorkspace(validated.value.result, owner.userId)],
-  };
+  try {
+    return {
+      actor,
+      workspaces: [statusToWorkspace(validated.value.result, owner.userId)],
+    };
+  } catch (error) {
+    return inventoryFailure(
+      actor,
+      workspace.id,
+      validated.value.requestId,
+      {
+        code: "invalid_input",
+        message:
+          error instanceof Error ? error.message : "invalid workspace dashboard config",
+        retryable: false,
+      },
+      validated.value.id,
+    );
+  }
 }
 
 function failedProvisionerClient(

@@ -7,6 +7,15 @@ export class AuthenticationRequiredError extends Error {
   }
 }
 
+function requireTrustedIdentityHeaders(headers: Headers) {
+  const secret = process.env.INCUS_WEB_TRUSTED_PROXY_SECRET?.trim();
+  if (!secret) return;
+
+  if (headers.get("x-incus-web-proxy-secret")?.trim() !== secret) {
+    throw new AuthenticationRequiredError("trusted proxy secret is required");
+  }
+}
+
 function firstHeader(headers: Headers, names: string[]): string | undefined {
   for (const name of names) {
     const value = headers.get(name);
@@ -19,10 +28,13 @@ function firstHeader(headers: Headers, names: string[]): string | undefined {
 }
 
 export function getActorFromHeaders(headers: Headers): ActorContext {
+  requireTrustedIdentityHeaders(headers);
+
   const email =
     firstHeader(headers, [
       "x-auth-request-email",
       "x-forwarded-email",
+      "remote-email",
       "x-authentik-email",
     ]) ?? devIdentity();
   const displayName =
@@ -30,10 +42,16 @@ export function getActorFromHeaders(headers: Headers): ActorContext {
       "x-auth-request-preferred-username",
       "x-auth-request-user",
       "x-forwarded-user",
+      "remote-name",
+      "remote-user",
       "x-authentik-name",
     ]) ?? email;
   const subject =
-    firstHeader(headers, ["x-auth-request-subject", "x-forwarded-sub"]) ??
+    firstHeader(headers, [
+      "x-auth-request-subject",
+      "x-forwarded-sub",
+      "remote-user",
+    ]) ??
     email;
 
   return {

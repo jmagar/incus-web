@@ -87,7 +87,20 @@ require_literal "INCUS_WEB_PROVISIONER_USER="
 require_literal "INCUS_WEB_PROVISIONER_GROUP="
 require_literal "INCUS_WEB_PROVISIONER_INCUS_GROUP="
 require_literal "INCUS_WEB_PROVISIONER_NODE="
+require_literal "INCUS_WEB_APP_NPM="
 require_literal "ENABLE_HOST_PROVISIONER_REMOTE_DOWNLOAD="
+require_literal "ENABLE_HOST_WEB_APP="
+require_literal "ENABLE_HOST_WEB_APP=0"
+require_literal "INCUS_WEB_APP_DIR="
+require_literal "INCUS_WEB_APP_ENV_FILE="
+require_literal "INCUS_WEB_APP_USER="
+require_literal "INCUS_WEB_APP_HOST="
+require_literal "INCUS_WEB_APP_PORT="
+require_literal "INCUS_WEB_WORKSPACE_OWNER_MODE="
+require_literal "INCUS_WEB_TRUSTED_PROXY_SECRET="
+require_literal "ENABLE_HOST_WEB_APP=1 requires ENABLE_HOST_PROVISIONER=1"
+require_literal "INCUS_WEB_APP_USER must be an existing unprivileged user, not root"
+require_literal "INCUS_WEB_TERMINAL_URL="
 require_literal "INCUS_WEB_WORKSPACE_ID="
 require_literal "INCUS_WEB_INCUS_PROJECT="
 require_literal "INCUS_WEB_INCUS_PROJECT=\"\${INCUS_WEB_INCUS_PROJECT:-\${INCUS_PROJECT:-}}\""
@@ -154,6 +167,7 @@ require_literal "expect_blocked_lan 192.168.0.1 80"
 require_literal "expect_blocked_lan 169.254.0.1 80"
 require_literal "validate_container \"\$CONTAINER_NAME\""
 require_literal "configure_host_provisioner \"\$CONTAINER_NAME\""
+require_literal "configure_host_web_app"
 require_literal "INCUS_PROFILE_YAML="
 require_literal "INCUS_PROFILE_NAME="
 require_literal "INCUS_PROFILE_URL="
@@ -210,11 +224,14 @@ for needle in \
   "INCUS_WEB_INCUS_PROJECT=default" \
   "INCUS_WEB_INCUS_CONTAINER=" \
   "ENABLE_HOST_PROVISIONER=1" \
-  "INCUS_WEB_PROVISIONER_TOKEN=" \
-  "INCUS_WEB_PROVISIONER_SOCKET=/run/incus-web/provisioner.sock" \
-  "INCUS_WEB_PROVISIONER_SOCKET_MODE=0660" \
-  "INCUS_WEB_PROVISIONER_GROUP=incus-web" \
-  "ENABLE_HOST_PROVISIONER_REMOTE_DOWNLOAD=0"; do
+	  "INCUS_WEB_PROVISIONER_TOKEN=" \
+	  "INCUS_WEB_PROVISIONER_SOCKET=/run/incus-web/provisioner.sock" \
+	  "INCUS_WEB_PROVISIONER_SOCKET_MODE=0660" \
+	  "INCUS_WEB_PROVISIONER_GROUP=incus-web" \
+	  "ENABLE_HOST_PROVISIONER_REMOTE_DOWNLOAD=0" \
+	  "ENABLE_HOST_WEB_APP=" \
+	  "INCUS_WEB_APP_PORT=3090" \
+	  "INCUS_WEB_WORKSPACE_OWNER_MODE=none"; do
   if ! grep -Fq -- "$needle" "$env_example"; then
     printf 'missing expected provisioner env example: %s\n' "$needle" >&2
     exit 1
@@ -223,16 +240,27 @@ done
 
 for needle in \
   "ensure_host_node()" \
+  "validate_host_node_version()" \
+  "validate_host_web_app_exposure()" \
   "active_incus_project()" \
   "incus_cmd project get-current" \
   "ensure_host_provisioner_identity()" \
   "ensure_host_provisioner_systemd()" \
   "validate_systemd_env_value()" \
+  "validate_port_value()" \
+  "validate_env_file_value()" \
   "install_host_provisioner_server()" \
   "ensure_host_provisioner_token()" \
   "write_host_provisioner_env()" \
   "write_host_provisioner_env \"\$name\"" \
   "configure_host_provisioner()" \
+  "configure_host_web_app()" \
+  "ensure_host_web_app_identity()" \
+  "install_host_web_app_runtime()" \
+  "restore_host_web_app_runtime()" \
+  "write_host_web_app_env()" \
+  "wait_for_host_provisioner()" \
+  "wait_for_host_web_app()" \
   "host provisioner server is missing locally; set ENABLE_HOST_PROVISIONER_REMOTE_DOWNLOAD=1" \
   "INCUS_WEB_PROVISIONER_SERVER_URL must use https://" \
   "curl --proto '=https' --tlsv1.2 -fsSL \"\$INCUS_WEB_PROVISIONER_SERVER_URL\"" \
@@ -249,6 +277,28 @@ for needle in \
   "ProtectSystem=full" \
   "EnvironmentFile=\$INCUS_WEB_PROVISIONER_ENV_FILE" \
   "ExecStart=\$INCUS_WEB_PROVISIONER_NODE \$INCUS_WEB_PROVISIONER_INSTALL_PATH" \
+  "incus-web-app.service" \
+  "User=\$INCUS_WEB_APP_USER" \
+  "SupplementaryGroups=\$INCUS_WEB_PROVISIONER_GROUP" \
+  "EnvironmentFile=\$INCUS_WEB_PROVISIONER_ENV_FILE" \
+  "EnvironmentFile=\$INCUS_WEB_APP_ENV_FILE" \
+  "sudo_cmd systemctl is-active --quiet incus-web-app" \
+  "sudo_cmd systemctl is-active --quiet incus-web-provisioner" \
+  "INCUS_WEB_TRUSTED_PROXY_SECRET is required when INCUS_WEB_APP_HOST is not loopback-only" \
+  "INCUS_WEB_WORKSPACE_OWNER_MODE=authenticated requires INCUS_WEB_ALLOW_SHARED_PROTOTYPE=1" \
+  "host provisioner did not become healthy" \
+  "/healthz" \
+  "host web app did not become healthy" \
+  "INCUS_WEB_APP_HOST=%s" \
+  "INCUS_WEB_APP_PORT=%s" \
+  "INCUS_WEB_ALLOW_SHARED_PROTOTYPE=%s" \
+  "INCUS_WEB_TRUSTED_PROXY_SECRET=%s" \
+  "--unix-socket \"\$INCUS_WEB_PROVISIONER_SOCKET\"" \
+  "/opt/incus-web-app.new" \
+  "/opt/incus-web-app.previous" \
+  "\"\$INCUS_WEB_APP_NPM\" ci --prefix \"\$INCUS_WEB_APP_DIR\"" \
+  "host Next.js web app build is current" \
+  "sudo_cmd test -f \"\$INCUS_WEB_PROVISIONER_ENV_FILE\"" \
   "sudo_cmd install -m 640 -g \"\$INCUS_WEB_PROVISIONER_GROUP\" \"\$tmp_file\" \"\$INCUS_WEB_PROVISIONER_ENV_FILE\"" \
   "sudo_cmd install -m 640 -g \"\$INCUS_WEB_PROVISIONER_GROUP\" \"\$tmp_file\" \"\$token_file\""; do
   if ! grep -Fq -- "$needle" "$lib"; then
@@ -256,6 +306,11 @@ for needle in \
     exit 1
   fi
 done
+
+if grep -Fq -- "Group=\$INCUS_WEB_APP_USER" "$lib"; then
+  printf 'host web app systemd unit must not assume user and group names match\n' >&2
+  exit 1
+fi
 
 if ! grep -Fq -- "scripts/provisioner-server.mjs" "$contract_doc" "$root/docs/contracts/multi-tenant-control-plane-v1.md"; then
   printf 'missing expected provisioner server docs\n' >&2
