@@ -207,7 +207,8 @@ Important variables:
 - `INCUS_WEB_APP_ENV_FILE`: host web-app environment file written by deploy. Defaults to `/etc/incus-web/web.env`.
 - `INCUS_WEB_APP_USER`: host user that runs `incus-web-app.service`. Defaults to the dedicated `incus-web-app` service account.
 - `INCUS_WEB_APP_HOST` and `INCUS_WEB_APP_PORT`: host bind address and port for `next start`. Keep this loopback-only unless a firewall or reverse-proxy boundary allows only the trusted SWAG host to reach it; the app trusts identity headers set by that proxy.
-- `INCUS_WEB_WORKSPACE_OWNER_MODE`: defaults to `none`. `authenticated` assigns the imported prototype workspace to the current authenticated actor and should be treated as an explicit single-user/prototype opt-in.
+- `INCUS_WEB_WORKSPACE_OWNER_MODE`: defaults to `none`. `authenticated` assigns the imported prototype workspace to the current authenticated actor and requires `INCUS_WEB_ALLOW_SHARED_PROTOTYPE=1`; use it only as an explicit single-user/prototype opt-in.
+- `INCUS_WEB_ALLOW_SHARED_PROTOTYPE`: defaults to `0`. Set to `1` only when intentionally exposing the imported `incus-web` prototype workspace before database-backed per-user workspace records exist.
 - `INCUS_WEB_TERMINAL_URL`: optional dashboard terminal link. Leave blank until terminal routing is explicitly exposed behind the web app.
 - `INCUS_WEB_TRUSTED_PROXY_SECRET`: optional shared secret header guard. When set, requests must include `X-Incus-Web-Proxy-Secret` with this value, which lets a trusted reverse proxy strip client-supplied identity headers and add a private marker before forwarding.
 - `TS_HOSTNAME`: tailnet hostname assigned to the container.

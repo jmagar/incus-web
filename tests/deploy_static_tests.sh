@@ -241,6 +241,7 @@ done
 for needle in \
   "ensure_host_node()" \
   "validate_host_node_version()" \
+  "validate_host_web_app_exposure()" \
   "active_incus_project()" \
   "incus_cmd project get-current" \
   "ensure_host_provisioner_identity()" \
@@ -256,7 +257,9 @@ for needle in \
   "configure_host_web_app()" \
   "ensure_host_web_app_identity()" \
   "install_host_web_app_runtime()" \
+  "restore_host_web_app_runtime()" \
   "write_host_web_app_env()" \
+  "wait_for_host_provisioner()" \
   "wait_for_host_web_app()" \
   "host provisioner server is missing locally; set ENABLE_HOST_PROVISIONER_REMOTE_DOWNLOAD=1" \
   "INCUS_WEB_PROVISIONER_SERVER_URL must use https://" \
@@ -280,11 +283,19 @@ for needle in \
   "EnvironmentFile=\$INCUS_WEB_PROVISIONER_ENV_FILE" \
   "EnvironmentFile=\$INCUS_WEB_APP_ENV_FILE" \
   "sudo_cmd systemctl is-active --quiet incus-web-app" \
+  "sudo_cmd systemctl is-active --quiet incus-web-provisioner" \
+  "INCUS_WEB_TRUSTED_PROXY_SECRET is required when INCUS_WEB_APP_HOST is not loopback-only" \
+  "INCUS_WEB_WORKSPACE_OWNER_MODE=authenticated requires INCUS_WEB_ALLOW_SHARED_PROTOTYPE=1" \
+  "host provisioner did not become healthy" \
   "/healthz" \
   "host web app did not become healthy" \
   "INCUS_WEB_APP_HOST=%s" \
   "INCUS_WEB_APP_PORT=%s" \
+  "INCUS_WEB_ALLOW_SHARED_PROTOTYPE=%s" \
   "INCUS_WEB_TRUSTED_PROXY_SECRET=%s" \
+  "--unix-socket \"\$INCUS_WEB_PROVISIONER_SOCKET\"" \
+  "/opt/incus-web-app.new" \
+  "/opt/incus-web-app.previous" \
   "\"\$INCUS_WEB_APP_NPM\" ci --prefix \"\$INCUS_WEB_APP_DIR\"" \
   "host Next.js web app build is current" \
   "sudo_cmd test -f \"\$INCUS_WEB_PROVISIONER_ENV_FILE\"" \

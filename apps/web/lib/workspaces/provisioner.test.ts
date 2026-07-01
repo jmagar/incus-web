@@ -314,6 +314,7 @@ describe("workspace inventory provisioner", () => {
 
   it("requires explicit authenticated owner mode for actor-scoped prototype ownership", async () => {
     vi.stubEnv("INCUS_WEB_WORKSPACE_OWNER_MODE", "authenticated");
+    vi.stubEnv("INCUS_WEB_ALLOW_SHARED_PROTOTYPE", "1");
     usePrototypeStaticMode();
     const actor = getActorFromHeaders(
       authHeaders({ email: "jacob@example.com", subject: "jacob" }),
@@ -323,6 +324,24 @@ describe("workspace inventory provisioner", () => {
 
     expect(inventory.workspaces).toHaveLength(1);
     expect(inventory.workspaces[0]?.ownerUserId).toBe("oidc:jacob");
+  });
+
+  it("rejects authenticated owner mode without the shared prototype opt-in", async () => {
+    vi.stubEnv("INCUS_WEB_WORKSPACE_OWNER_MODE", "authenticated");
+    usePrototypeStaticMode();
+    const actor = getActorFromHeaders(
+      authHeaders({ email: "jacob@example.com", subject: "jacob" }),
+    );
+
+    const inventory = await getWorkspaceInventory(actor);
+
+    expect(inventory.workspaces).toHaveLength(0);
+    expect(inventory.provisionerError).toMatchObject({
+      code: "invalid_input",
+      message:
+        "INCUS_WEB_WORKSPACE_OWNER_MODE=authenticated requires INCUS_WEB_ALLOW_SHARED_PROTOTYPE=1",
+      workspaceId: "unknown",
+    });
   });
 
   it("does not implicitly assign the imported prototype to any signed-in actor", async () => {
@@ -520,6 +539,7 @@ describe("workspace inventory provisioner", () => {
   it("uses authenticated ownership in production only when explicitly enabled", async () => {
     vi.stubEnv("NODE_ENV", "production");
     vi.stubEnv("INCUS_WEB_WORKSPACE_OWNER_MODE", "authenticated");
+    vi.stubEnv("INCUS_WEB_ALLOW_SHARED_PROTOTYPE", "1");
     const actor = getActorFromHeaders(authHeaders({ subject: "owner-subject" }));
     const client = {
       send: vi.fn().mockResolvedValue({

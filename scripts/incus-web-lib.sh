@@ -445,6 +445,9 @@ push_open_script() {
 ensure_host_node() {
   if [[ -x "$INCUS_WEB_PROVISIONER_NODE" ]]; then
     if [[ -x "${INCUS_WEB_APP_NPM:-/usr/bin/npm}" || "$ENABLE_HOST_WEB_APP" != "1" ]]; then
+      if [[ "$ENABLE_HOST_WEB_APP" == "1" ]]; then
+        validate_host_node_version
+      fi
       return
     fi
   fi
@@ -572,6 +575,20 @@ validate_env_file_value() {
   [[ "$value" != *$'\n'* && "$value" != *$'\r'* ]] || die "$name must not contain newlines"
 }
 
+validate_host_web_app_exposure() {
+  case "$INCUS_WEB_APP_HOST" in
+    127.0.0.1|::1|localhost)
+      ;;
+    *)
+      [[ -n "${INCUS_WEB_TRUSTED_PROXY_SECRET:-}" ]] || die "INCUS_WEB_TRUSTED_PROXY_SECRET is required when INCUS_WEB_APP_HOST is not loopback-only"
+      ;;
+  esac
+
+  if [[ "$INCUS_WEB_WORKSPACE_OWNER_MODE" == "authenticated" ]]; then
+    [[ "${INCUS_WEB_ALLOW_SHARED_PROTOTYPE:-0}" == "1" ]] || die "INCUS_WEB_WORKSPACE_OWNER_MODE=authenticated requires INCUS_WEB_ALLOW_SHARED_PROTOTYPE=1"
+  fi
+}
+
 ensure_host_provisioner_systemd() {
   have systemctl || die "systemctl is required for ENABLE_HOST_PROVISIONER=1; set ENABLE_HOST_PROVISIONER=0 to skip the host provisioner service"
   [[ -d /run/systemd/system ]] || die "systemd is not running; set ENABLE_HOST_PROVISIONER=0 to skip the host provisioner service"
@@ -663,6 +680,7 @@ EOF
   sudo_cmd systemctl daemon-reload
   sudo_cmd systemctl enable incus-web-provisioner
   sudo_cmd systemctl restart incus-web-provisioner
+  wait_for_host_provisioner
   log "host provisioner: incus-web-provisioner via $INCUS_WEB_PROVISIONER_SOCKET"
 }
 
@@ -705,28 +723,48 @@ host_web_app_source_stamp() {
 }
 
 install_host_web_app_runtime() {
+  local install_path=/opt/incus-web-app
+  local previous_path=/opt/incus-web-app.previous
   local runtime_paths=(package.json package-lock.json .next node_modules)
+  local staging_path=/opt/incus-web-app.new
 
   if [[ -d "$INCUS_WEB_APP_DIR/public" ]]; then
     runtime_paths+=(public)
   fi
 
-  sudo_cmd rm -rf /opt/incus-web-app
-  sudo_cmd install -d -m 755 /opt/incus-web-app
+  sudo_cmd rm -rf "$staging_path"
+  sudo_cmd install -d -m 755 "$staging_path"
   (
     cd "$INCUS_WEB_APP_DIR"
     tar -cf - "${runtime_paths[@]}"
-  ) | sudo_cmd tar -xf - -C /opt/incus-web-app
-  sudo_cmd chown -R root:root /opt/incus-web-app
-  sudo_cmd install -d -m 750 -o "$INCUS_WEB_APP_USER" -g "$INCUS_WEB_PROVISIONER_GROUP" /opt/incus-web-app/.next/cache
+  ) | sudo_cmd tar -xf - -C "$staging_path"
+  sudo_cmd rm -rf "$staging_path/.next/cache"
+  sudo_cmd chown -R root:root "$staging_path"
+  sudo_cmd install -d -m 750 -o "$INCUS_WEB_APP_USER" -g "$INCUS_WEB_PROVISIONER_GROUP" "$staging_path/.next/cache"
+  sudo_cmd rm -rf "$previous_path"
+  if sudo_cmd test -e "$install_path"; then
+    sudo_cmd mv "$install_path" "$previous_path"
+  fi
+  sudo_cmd mv "$staging_path" "$install_path"
+}
+
+restore_host_web_app_runtime() {
+  local install_path=/opt/incus-web-app
+  local previous_path=/opt/incus-web-app.previous
+
+  sudo_cmd test -e "$previous_path" || return 1
+  sudo_cmd rm -rf "$install_path"
+  sudo_cmd mv "$previous_path" "$install_path"
 }
 
 write_host_web_app_env() {
   local tmp_file
 
+  validate_host_web_app_exposure
   validate_systemd_env_value INCUS_WEB_APP_HOST "$INCUS_WEB_APP_HOST"
   validate_port_value INCUS_WEB_APP_PORT "$INCUS_WEB_APP_PORT"
   validate_systemd_env_value INCUS_WEB_WORKSPACE_OWNER_MODE "$INCUS_WEB_WORKSPACE_OWNER_MODE"
+  validate_systemd_env_value INCUS_WEB_ALLOW_SHARED_PROTOTYPE "$INCUS_WEB_ALLOW_SHARED_PROTOTYPE"
   if [[ -n "$INCUS_WEB_TERMINAL_URL" ]]; then
     validate_env_file_value INCUS_WEB_TERMINAL_URL "$INCUS_WEB_TERMINAL_URL"
   fi
@@ -743,6 +781,7 @@ write_host_web_app_env() {
     printf 'INCUS_WEB_APP_HOST=%s\n' "$INCUS_WEB_APP_HOST"
     printf 'INCUS_WEB_APP_PORT=%s\n' "$INCUS_WEB_APP_PORT"
     printf 'INCUS_WEB_WORKSPACE_OWNER_MODE=%s\n' "$INCUS_WEB_WORKSPACE_OWNER_MODE"
+    printf 'INCUS_WEB_ALLOW_SHARED_PROTOTYPE=%s\n' "$INCUS_WEB_ALLOW_SHARED_PROTOTYPE"
     if [[ -n "$INCUS_WEB_TERMINAL_URL" ]]; then
       printf 'INCUS_WEB_TERMINAL_URL=%s\n' "$INCUS_WEB_TERMINAL_URL"
     fi
@@ -756,10 +795,34 @@ write_host_web_app_env() {
   rm -f "$tmp_file"
 }
 
+wait_for_host_provisioner() {
+  local body
+  local response
+
+  body="$(printf '{"version":"provisioner.v1","requestId":"deploy-health","type":"GetWorkspaceStatus","actor":{"userId":"system:deploy","oidcSubject":"deploy","email":"deploy@incus-web.local","displayName":"deploy"},"workspace":{"id":"%s","ownerUserId":"system:deploy","incusProject":"%s","incusContainer":"%s"},"payload":{}}' "$INCUS_WEB_WORKSPACE_ID" "$INCUS_WEB_INCUS_PROJECT" "$INCUS_WEB_INCUS_CONTAINER")"
+  for _ in {1..30}; do
+    if sudo_cmd systemctl is-active --quiet incus-web-provisioner; then
+      response="$(sudo_cmd curl -fsS --max-time 3 --unix-socket "$INCUS_WEB_PROVISIONER_SOCKET" \
+        -H "Authorization: Bearer $INCUS_WEB_PROVISIONER_TOKEN" \
+        -H "Content-Type: application/json" \
+        --data "$body" \
+        http://localhost/v1/operations 2>/dev/null || true)"
+      if [[ "$response" == *'"status":"succeeded"'* ]]; then
+        return
+      fi
+    fi
+    sleep 1
+  done
+
+  sudo_cmd journalctl -u incus-web-provisioner -n 80 --no-pager >&2 || true
+  die "host provisioner did not become healthy"
+}
+
 wait_for_host_web_app() {
   local url="http://$INCUS_WEB_APP_HOST:$INCUS_WEB_APP_PORT/healthz"
   local curl_args=(-fsS --max-time 2)
 
+  wait_for_host_provisioner
   if [[ -n "${INCUS_WEB_TRUSTED_PROXY_SECRET:-}" ]]; then
     curl_args+=(-H "X-Incus-Web-Proxy-Secret: $INCUS_WEB_TRUSTED_PROXY_SECRET")
   fi
@@ -771,7 +834,7 @@ wait_for_host_web_app() {
   done
 
   sudo_cmd journalctl -u incus-web-app -n 80 --no-pager >&2 || true
-  die "host web app did not become healthy at $url"
+  return 1
 }
 
 configure_host_web_app() {
@@ -845,7 +908,12 @@ EOF
   sudo_cmd systemctl daemon-reload
   sudo_cmd systemctl enable incus-web-app
   sudo_cmd systemctl restart incus-web-app
-  wait_for_host_web_app
+  if ! wait_for_host_web_app; then
+    if restore_host_web_app_runtime; then
+      sudo_cmd systemctl restart incus-web-app || true
+    fi
+    die "host web app did not become healthy at http://$INCUS_WEB_APP_HOST:$INCUS_WEB_APP_PORT/healthz"
+  fi
   log "host web app: incus-web-app on $INCUS_WEB_APP_HOST:$INCUS_WEB_APP_PORT"
 }
 
