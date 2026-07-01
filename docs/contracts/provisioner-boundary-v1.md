@@ -37,6 +37,13 @@ Allowed fallback:
 
 The endpoint must not be exposed through SWAG, Tailscale, public DNS, workspace bridges, or container-local routes.
 
+The first host-local implementation is split across:
+
+- `apps/web/lib/provisioner/host-transport.ts` for the Next.js-side Unix-socket/localhost transport client.
+- `scripts/provisioner-server.mjs` for the host-side provisioner service entrypoint.
+
+host-local is the default provisioner mode, but it only becomes active when `INCUS_WEB_PROVISIONER_TOKEN` is configured. Without that token, inventory fails closed with `unauthenticated_service`. `prototype-static` remains a development-only escape hatch and must not be enabled in production.
+
 ## Authentication
 
 The control plane authenticates to the provisioner with a service token.
@@ -55,6 +62,8 @@ Rules:
 - The token only proves that the caller is the trusted control-plane service.
 - User authorization is resolved by the control plane before a command is sent.
 - The provisioner still validates workspace metadata before host mutation.
+- `INCUS_WEB_PROVISIONER_TOKEN` must be shared only between the trusted Next.js control plane and the host provisioner service.
+- Bearer authentication does not bypass workspace tuple validation.
 
 ## Scalar Types
 
@@ -97,7 +106,8 @@ type ProvisionerWorkspaceRef = {
 Provisioner validation requirements:
 
 - `id`, `incusProject`, and `incusContainer` must be non-empty.
-- `incusProject` and `incusContainer` must match generated-name policy.
+- Generated multi-tenant `incusProject` and `incusContainer` values must match generated-name policy.
+- The imported prototype workspace may use Incus project `default` and container `incus-web` while it is being adopted into the control plane.
 - The tuple must match control-plane workspace metadata.
 - The provisioner must reject mismatched tuples with `metadata_mismatch`.
 
@@ -485,8 +495,11 @@ The true host provisioner implementation can wrap existing shell helpers:
 - `scripts/incus-web-lib.sh` for network/profile/common behavior
 - image/profile conventions from `distrobuilder.yaml` and `incus-web-profile.yaml`
 - current setup behavior from the container-local setup server
+- imported prototype defaults from `.env.example`: `workspace-incus-web`, `default`, and `incus-web`
 
 This compatibility is an implementation detail. The web app consumes only this contract. Static prototype status mode must be explicitly configured and must not be treated as a real host-local provisioner.
+
+The first host service may call the `incus` CLI as a bounded adapter while the Incus REST client is being developed, but only behind the provisioner service. Next.js request handlers must continue to call the provisioner contract, not `incus`, shell commands, or raw Incus endpoints.
 
 ## Implementation Entry Points
 
@@ -494,7 +507,9 @@ The first TypeScript implementation lives in:
 
 - `apps/web/lib/provisioner/contracts.ts` for contract types and validators
 - `apps/web/lib/provisioner/client.ts` for the provisioner client interface
+- `apps/web/lib/provisioner/host-transport.ts` for the host-local transport client
 - `apps/web/lib/provisioner/status-adapter.ts` for mapping v1 status into workspace dashboard data
+- `scripts/provisioner-server.mjs` for the initial host provisioner service
 
 Future host transports must preserve these interfaces so the Next.js workspace inventory does not learn raw Incus details.
 

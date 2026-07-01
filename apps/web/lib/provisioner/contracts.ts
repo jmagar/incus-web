@@ -234,6 +234,14 @@ export function validateGeneratedName(
   );
 }
 
+export function validateIncusProjectName(value: string): boolean {
+  return value === "default" || validateGeneratedName(value, "user");
+}
+
+export function validateIncusContainerName(value: string): boolean {
+  return value === "incus-web" || validateGeneratedName(value, "ws");
+}
+
 export function validateProvisionerCommand(
   command: unknown,
 ): ValidationResult<ProvisionerCommand> {
@@ -476,9 +484,9 @@ function isWorkspaceRef(value: unknown): value is ProvisionerWorkspaceRef {
     typeof value.ownerUserId === "string" &&
     value.ownerUserId.length > 0 &&
     typeof value.incusProject === "string" &&
-    validateGeneratedName(value.incusProject, "user") &&
+    validateIncusProjectName(value.incusProject) &&
     typeof value.incusContainer === "string" &&
-    validateGeneratedName(value.incusContainer, "ws")
+    validateIncusContainerName(value.incusContainer)
   );
 }
 

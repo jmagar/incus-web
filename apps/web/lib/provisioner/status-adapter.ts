@@ -3,6 +3,10 @@ import type {
   ProvisionerWorkspaceRef,
   WorkspaceRuntimeStatus,
 } from "@/lib/provisioner/contracts";
+import {
+  validateIncusContainerName,
+  validateIncusProjectName,
+} from "@/lib/provisioner/contracts";
 import type {
   SetupPhase,
   Workspace,
@@ -15,11 +19,25 @@ const gib = 1024 * 1024 * 1024;
 export function buildPrototypeWorkspaceRef(
   ownerUserId: string,
 ): ProvisionerWorkspaceRef {
+  const incusProject = stringEnv(
+    "INCUS_WEB_INCUS_PROJECT",
+    "default",
+  );
+  const incusContainer = stringEnv(
+    "INCUS_WEB_INCUS_CONTAINER",
+    process.env.CONTAINER_NAME?.trim() || "incus-web",
+  );
+  if (!validateIncusProjectName(incusProject)) {
+    throw new Error("INCUS_WEB_INCUS_PROJECT is invalid");
+  }
+  if (!validateIncusContainerName(incusContainer)) {
+    throw new Error("INCUS_WEB_INCUS_CONTAINER is invalid");
+  }
   return {
-    id: "workspace-incus-web",
+    id: stringEnv("INCUS_WEB_WORKSPACE_ID", "workspace-incus-web"),
     ownerUserId,
-    incusProject: "user-incus-web",
-    incusContainer: "ws-incus-web",
+    incusProject,
+    incusContainer,
   };
 }
 
@@ -95,4 +113,12 @@ function numberEnv(name: string, fallback: number): number {
     throw new Error(`${name} must be a positive number`);
   }
   return parsed;
+}
+
+function stringEnv(name: string, fallback: string): string {
+  const value = process.env[name]?.trim();
+  if (!value) {
+    return fallback;
+  }
+  return value;
 }
