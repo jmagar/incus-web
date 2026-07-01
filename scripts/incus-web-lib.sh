@@ -444,16 +444,21 @@ push_open_script() {
 
 ensure_host_node() {
   if [[ -x "$INCUS_WEB_PROVISIONER_NODE" ]]; then
-    return
+    if [[ -x "${INCUS_WEB_APP_NPM:-/usr/bin/npm}" || "$ENABLE_HOST_WEB_APP" != "1" ]]; then
+      return
+    fi
   fi
 
-  have apt-get || die "$INCUS_WEB_PROVISIONER_NODE is required for the host provisioner and this script only knows how to install it with apt-get"
-  have sudo || [[ "$(id -u)" -eq 0 ]] || die "sudo is required to install node for the host provisioner"
+  have apt-get || die "$INCUS_WEB_PROVISIONER_NODE and ${INCUS_WEB_APP_NPM:-/usr/bin/npm} are required for the host services and this script only knows how to install them with apt-get"
+  have sudo || [[ "$(id -u)" -eq 0 ]] || die "sudo is required to install node for the host services"
 
-  log "installing host node runtime for provisioner"
+  log "installing host node runtime for provisioner and web app"
   sudo_cmd apt-get update
-  sudo_cmd apt-get install -y nodejs
+  sudo_cmd apt-get install -y nodejs npm
   [[ -x "$INCUS_WEB_PROVISIONER_NODE" ]] || die "nodejs installed but $INCUS_WEB_PROVISIONER_NODE is not executable"
+  if [[ "$ENABLE_HOST_WEB_APP" == "1" ]]; then
+    [[ -x "$INCUS_WEB_APP_NPM" ]] || die "npm installed but $INCUS_WEB_APP_NPM is not executable"
+  fi
 }
 
 install_host_provisioner_server() {
@@ -623,6 +628,103 @@ EOF
   sudo_cmd systemctl enable incus-web-provisioner
   sudo_cmd systemctl restart incus-web-provisioner
   log "host provisioner: incus-web-provisioner via $INCUS_WEB_PROVISIONER_SOCKET"
+}
+
+ensure_host_web_app_systemd() {
+  have systemctl || die "systemctl is required for ENABLE_HOST_WEB_APP=1; set ENABLE_HOST_WEB_APP=0 to skip the host web app service"
+  [[ -d /run/systemd/system ]] || die "systemd is not running; set ENABLE_HOST_WEB_APP=0 to skip the host web app service"
+}
+
+ensure_host_web_app_identity() {
+  getent passwd "$INCUS_WEB_APP_USER" >/dev/null 2>&1 || die "host web app user does not exist: $INCUS_WEB_APP_USER"
+  getent group "$INCUS_WEB_PROVISIONER_GROUP" >/dev/null 2>&1 || sudo_cmd groupadd --system "$INCUS_WEB_PROVISIONER_GROUP"
+}
+
+write_host_web_app_env() {
+  local tmp_file
+
+  validate_systemd_env_value INCUS_WEB_APP_HOST "$INCUS_WEB_APP_HOST"
+  validate_systemd_env_value INCUS_WEB_APP_PORT "$INCUS_WEB_APP_PORT"
+  validate_systemd_env_value INCUS_WEB_WORKSPACE_OWNER_MODE "$INCUS_WEB_WORKSPACE_OWNER_MODE"
+  if [[ -n "$INCUS_WEB_TERMINAL_URL" ]]; then
+    validate_systemd_env_value INCUS_WEB_TERMINAL_URL "$INCUS_WEB_TERMINAL_URL"
+  fi
+
+  tmp_file="$(mktemp)"
+  chmod 600 "$tmp_file"
+  {
+    printf 'NODE_ENV=production\n'
+    printf 'HOSTNAME=%s\n' "$INCUS_WEB_APP_HOST"
+    printf 'PORT=%s\n' "$INCUS_WEB_APP_PORT"
+    printf 'INCUS_WEB_APP_HOST=%s\n' "$INCUS_WEB_APP_HOST"
+    printf 'INCUS_WEB_APP_PORT=%s\n' "$INCUS_WEB_APP_PORT"
+    printf 'INCUS_WEB_WORKSPACE_OWNER_MODE=%s\n' "$INCUS_WEB_WORKSPACE_OWNER_MODE"
+    if [[ -n "$INCUS_WEB_TERMINAL_URL" ]]; then
+      printf 'INCUS_WEB_TERMINAL_URL=%s\n' "$INCUS_WEB_TERMINAL_URL"
+    fi
+  } >"$tmp_file"
+
+  sudo_cmd install -d -m 750 -g "$INCUS_WEB_PROVISIONER_GROUP" "$(dirname "$INCUS_WEB_APP_ENV_FILE")"
+  sudo_cmd install -m 640 -g "$INCUS_WEB_PROVISIONER_GROUP" "$tmp_file" "$INCUS_WEB_APP_ENV_FILE"
+  rm -f "$tmp_file"
+}
+
+configure_host_web_app() {
+  local tmp_unit
+
+  if [[ "$ENABLE_HOST_WEB_APP" != "1" ]]; then
+    if have systemctl; then
+      sudo_cmd systemctl disable --now incus-web-app >/dev/null 2>&1 || true
+    fi
+    return
+  fi
+
+  ensure_host_web_app_systemd
+  ensure_host_node
+  ensure_host_web_app_identity
+  [[ -d "$INCUS_WEB_APP_DIR" ]] || die "host web app directory does not exist: $INCUS_WEB_APP_DIR"
+  [[ -f "$INCUS_WEB_APP_DIR/package.json" ]] || die "host web app package.json is missing: $INCUS_WEB_APP_DIR/package.json"
+  [[ -x "$INCUS_WEB_APP_NPM" ]] || die "npm is required for the host web app: $INCUS_WEB_APP_NPM"
+  sudo_cmd test -f "$INCUS_WEB_PROVISIONER_ENV_FILE" || die "host provisioner env file is required before starting the web app: $INCUS_WEB_PROVISIONER_ENV_FILE"
+
+  log "building host Next.js web app"
+  "$INCUS_WEB_APP_NPM" ci --prefix "$INCUS_WEB_APP_DIR"
+  "$INCUS_WEB_APP_NPM" --prefix "$INCUS_WEB_APP_DIR" run build
+  write_host_web_app_env
+
+  tmp_unit="$(mktemp)"
+  cat >"$tmp_unit" <<EOF
+[Unit]
+Description=incus-web Next.js control plane
+After=network-online.target incus-web-provisioner.service
+Wants=network-online.target incus-web-provisioner.service
+
+[Service]
+Type=simple
+User=$INCUS_WEB_APP_USER
+Group=$INCUS_WEB_APP_USER
+SupplementaryGroups=$INCUS_WEB_PROVISIONER_GROUP
+WorkingDirectory=$INCUS_WEB_APP_DIR
+EnvironmentFile=$INCUS_WEB_PROVISIONER_ENV_FILE
+EnvironmentFile=$INCUS_WEB_APP_ENV_FILE
+ExecStart=$INCUS_WEB_APP_NPM run start -- --hostname \$INCUS_WEB_APP_HOST --port \$INCUS_WEB_APP_PORT
+Restart=always
+RestartSec=2
+NoNewPrivileges=true
+PrivateTmp=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  sudo_cmd install -m 644 "$tmp_unit" /etc/systemd/system/incus-web-app.service
+  rm -f "$tmp_unit"
+  sudo_cmd systemctl daemon-reload
+  sudo_cmd systemctl enable incus-web-app
+  sudo_cmd systemctl restart incus-web-app
+  log "host web app: incus-web-app on $INCUS_WEB_APP_HOST:$INCUS_WEB_APP_PORT"
 }
 
 provision_container() {

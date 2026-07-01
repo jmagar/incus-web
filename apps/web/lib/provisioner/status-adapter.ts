@@ -81,6 +81,7 @@ export function statusToWorkspace(
         : "host quota pending",
     },
     setup: setupSummary(status),
+    terminalUrl: optionalStringEnv("INCUS_WEB_TERMINAL_URL"),
     accessNote:
       "Single-container prototype. Terminal routing moves behind workspace-scoped sessions before multi-user sharing.",
     createdAt,
@@ -121,4 +122,9 @@ function stringEnv(name: string, fallback: string): string {
     return fallback;
   }
   return value;
+}
+
+function optionalStringEnv(name: string): string | undefined {
+  const value = process.env[name]?.trim();
+  return value || undefined;
 }

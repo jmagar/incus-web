@@ -80,7 +80,9 @@ npm --prefix apps/web run build
 
 This first slice is read-only. It reads authenticated identity from reverse-proxy/OIDC headers when present, falls back to a local development actor, and renders the current `incus-web` workspace inventory without mutating Incus state.
 
-`deploy.sh` installs the host provisioner service by default. It creates a dedicated `incus-web-provisioner` system user, grants that user Incus access through `incus-admin`, writes a group-readable environment file at `/etc/incus-web/provisioner.env`, generates or reuses `/etc/incus-web/provisioner.token` when `INCUS_WEB_PROVISIONER_TOKEN` is blank, and listens on `/run/incus-web/provisioner.sock` with mode `0660`. The Next.js app must receive the same `INCUS_WEB_PROVISIONER_TOKEN`, `INCUS_WEB_PROVISIONER_SOCKET`, and workspace tuple env values when it runs on the host. Add only the trusted web-app service user to the `incus-web` group so it can read the env/token and connect to the socket.
+`deploy.sh` installs the host provisioner service by default. It creates a dedicated `incus-web-provisioner` system user, grants that user Incus access through `incus-admin`, writes a group-readable environment file at `/etc/incus-web/provisioner.env`, generates or reuses `/etc/incus-web/provisioner.token` when `INCUS_WEB_PROVISIONER_TOKEN` is blank, and listens on `/run/incus-web/provisioner.sock` with mode `0660`.
+
+`deploy.sh` also installs the host Next.js control-plane service by default. `incus-web-app.service` builds `apps/web`, runs `next start` on `INCUS_WEB_APP_HOST:INCUS_WEB_APP_PORT`, reads the provisioner env file, and gets only the `incus-web` supplementary group needed to call the host-local provisioner. The imported prototype workspace defaults to `INCUS_WEB_WORKSPACE_OWNER_MODE=authenticated`, so the currently authenticated reverse-proxy user sees the live `incus-web` workspace until database-backed owner and sharing records are introduced.
 
 ## Quick Start
 
@@ -200,6 +202,13 @@ Important variables:
 - `INCUS_WEB_PROVISIONER_USER`, `INCUS_WEB_PROVISIONER_GROUP`, and `INCUS_WEB_PROVISIONER_INCUS_GROUP`: host service identity. Add the trusted web-app service user to `INCUS_WEB_PROVISIONER_GROUP`, not to `incus-admin`.
 - `INCUS_WEB_PROVISIONER_NODE`: absolute Node.js executable used by the systemd unit.
 - `ENABLE_HOST_PROVISIONER_REMOTE_DOWNLOAD`: set to `1` only when curl-piping deploy and intentionally fetching `scripts/provisioner-server.mjs` from `INCUS_WEB_PROVISIONER_SERVER_URL`.
+- `ENABLE_HOST_WEB_APP`: set to `0` to skip the host Next.js control-plane systemd unit.
+- `INCUS_WEB_APP_DIR`: checkout path containing `apps/web/package.json`. Defaults to the repo checkout used by `deploy.sh`.
+- `INCUS_WEB_APP_ENV_FILE`: host web-app environment file written by deploy. Defaults to `/etc/incus-web/web.env`.
+- `INCUS_WEB_APP_USER`: host user that runs `incus-web-app.service`. Defaults to the user running deploy.
+- `INCUS_WEB_APP_HOST` and `INCUS_WEB_APP_PORT`: host bind address and port for `next start`. For the tootie SWAG route this is `100.88.16.79:3090`.
+- `INCUS_WEB_WORKSPACE_OWNER_MODE`: `authenticated` assigns the imported prototype workspace to the current authenticated actor. Use `none` to hide it unless explicit owner env is configured.
+- `INCUS_WEB_TERMINAL_URL`: optional dashboard terminal link. Leave blank until terminal routing is explicitly exposed behind the web app.
 - `TS_HOSTNAME`: tailnet hostname assigned to the container.
 - `TS_EXTRA_ARGS`: extra flags passed to `tailscale up`; defaults to `--accept-routes=false`.
 - `TAILSCALE_SERVE_PORT`: HTTPS port exposed by `tailscale serve`.

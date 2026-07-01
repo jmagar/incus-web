@@ -27,16 +27,23 @@ type ConfiguredOwner = {
   email?: string;
 };
 
-function configuredOwner(): ConfiguredOwner | undefined {
+function configuredOwner(actor: ActorContext): ConfiguredOwner | undefined {
   const subject = process.env.INCUS_WEB_WORKSPACE_OWNER_SUBJECT?.trim();
   if (subject) return { userId: `oidc:${subject}` };
 
-  if (process.env.NODE_ENV === "production") {
-    return undefined;
-  }
-
   const email = process.env.INCUS_WEB_WORKSPACE_OWNER_EMAIL?.trim();
   if (email) return { userId: `oidc:${email}`, email: email.toLowerCase() };
+
+  const ownerMode = process.env.INCUS_WEB_WORKSPACE_OWNER_MODE ?? "authenticated";
+  if (ownerMode === "authenticated") {
+    return {
+      userId: actor.userId,
+      email: actor.email.toLowerCase(),
+    };
+  }
+  if (ownerMode === "none") {
+    return undefined;
+  }
 
   if (process.env.INCUS_WEB_ALLOW_DEV_AUTH === "1") {
     return {
@@ -117,7 +124,7 @@ export async function getWorkspaceInventory(
   actor: ActorContext,
   client?: ProvisionerClient,
 ): Promise<WorkspaceInventory> {
-  const owner = configuredOwner();
+  const owner = configuredOwner(actor);
   if (!owner || !actorMatchesOwner(actor, owner)) {
     return { actor, workspaces: [] };
   }

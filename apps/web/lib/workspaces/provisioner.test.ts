@@ -71,6 +71,23 @@ describe("workspace inventory provisioner", () => {
     expect(actor.requestId).toBe("req-123");
   });
 
+  it("parses SWAG Authelia Remote-* identity headers", () => {
+    const actor = getActorFromHeaders(
+      new Headers({
+        "remote-email": "jmagar@example.com",
+        "remote-name": "Jacob Magar",
+        "remote-user": "jmagar",
+        "x-request-id": "req-swag",
+      }),
+    );
+
+    expect(actor.email).toBe("jmagar@example.com");
+    expect(actor.displayName).toBe("Jacob Magar");
+    expect(actor.oidcSubject).toBe("jmagar");
+    expect(actor.userId).toBe("oidc:jmagar");
+    expect(actor.requestId).toBe("req-swag");
+  });
+
   it("falls back to a local development actor without headers", () => {
     vi.stubEnv("INCUS_WEB_ALLOW_DEV_AUTH", "1");
     const actor = getActorFromHeaders(new Headers());
@@ -259,6 +276,28 @@ describe("workspace inventory provisioner", () => {
     expect(inventory.workspaces).toHaveLength(0);
   });
 
+  it("uses the authenticated actor as the imported prototype owner by default", async () => {
+    usePrototypeStaticMode();
+    const actor = getActorFromHeaders(
+      authHeaders({ email: "jacob@example.com", subject: "jacob" }),
+    );
+
+    const inventory = await getWorkspaceInventory(actor);
+
+    expect(inventory.workspaces).toHaveLength(1);
+    expect(inventory.workspaces[0]?.ownerUserId).toBe("oidc:jacob");
+  });
+
+  it("can disable implicit authenticated ownership", async () => {
+    vi.stubEnv("INCUS_WEB_WORKSPACE_OWNER_MODE", "none");
+    usePrototypeStaticMode();
+    const actor = ownerActor();
+
+    const inventory = await getWorkspaceInventory(actor);
+
+    expect(inventory.workspaces).toHaveLength(0);
+  });
+
   it("returns no workspace when provisioner status fails", async () => {
     useOwnerSubject();
     const actor = ownerActor();
@@ -392,14 +431,29 @@ describe("workspace inventory provisioner", () => {
     });
   });
 
-  it("requires subject-configured ownership in production", async () => {
+  it("uses authenticated ownership in production unless disabled", async () => {
     vi.stubEnv("NODE_ENV", "production");
-    useOwnerEmail();
-    const actor = ownerActor();
+    const actor = getActorFromHeaders(authHeaders({ subject: "owner-subject" }));
+    const client = {
+      send: vi.fn().mockResolvedValue({
+        id: "op-prod",
+        requestId: actor.requestId,
+        type: "GetWorkspaceStatus",
+        workspaceId: "workspace-incus-web",
+        status: "succeeded",
+        result: {
+          workspaceId: "workspace-incus-web",
+          state: "running",
+          incusProject: "default",
+          incusContainer: "incus-web",
+          lastCheckedAt: "2026-07-01T00:00:00.000Z",
+        },
+      }),
+    };
 
-    const inventory = await getWorkspaceInventory(actor);
+    const inventory = await getWorkspaceInventory(actor, client);
 
-    expect(inventory.workspaces).toHaveLength(0);
+    expect(inventory.workspaces[0]?.ownerUserId).toBe("oidc:owner-subject");
   });
 
   it("does not expose the shared prototype workspace to another actor", async () => {

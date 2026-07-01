@@ -23,6 +23,7 @@ export function getActorFromHeaders(headers: Headers): ActorContext {
     firstHeader(headers, [
       "x-auth-request-email",
       "x-forwarded-email",
+      "remote-email",
       "x-authentik-email",
     ]) ?? devIdentity();
   const displayName =
@@ -30,10 +31,16 @@ export function getActorFromHeaders(headers: Headers): ActorContext {
       "x-auth-request-preferred-username",
       "x-auth-request-user",
       "x-forwarded-user",
+      "remote-name",
+      "remote-user",
       "x-authentik-name",
     ]) ?? email;
   const subject =
-    firstHeader(headers, ["x-auth-request-subject", "x-forwarded-sub"]) ??
+    firstHeader(headers, [
+      "x-auth-request-subject",
+      "x-forwarded-sub",
+      "remote-user",
+    ]) ??
     email;
 
   return {

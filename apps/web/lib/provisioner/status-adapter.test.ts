@@ -14,6 +14,7 @@ describe("provisioner status adapter", () => {
     delete process.env.INCUS_WEB_WORKSPACE_ID;
     delete process.env.INCUS_WEB_INCUS_PROJECT;
     delete process.env.INCUS_WEB_INCUS_CONTAINER;
+    delete process.env.INCUS_WEB_TERMINAL_URL;
     delete process.env.CONTAINER_NAME;
   });
 
@@ -99,5 +100,22 @@ describe("provisioner status adapter", () => {
         phase: "ready",
       },
     });
+  });
+
+  it("adds the configured terminal URL to dashboard workspaces", () => {
+    process.env.INCUS_WEB_TERMINAL_URL = "/terminal/";
+
+    const workspace = statusToWorkspace(
+      {
+        workspaceId: "workspace-incus-web",
+        state: "running",
+        incusProject: "default",
+        incusContainer: "incus-web",
+        lastCheckedAt: "2026-07-01T00:00:00.000Z",
+      },
+      "oidc:owner@example.com",
+    );
+
+    expect(workspace.terminalUrl).toBe("/terminal/");
   });
 });
