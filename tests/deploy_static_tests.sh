@@ -291,6 +291,8 @@ for needle in \
   "INCUS_WEB_PROVISIONER_MAX_INCUS_COMMANDS" \
   "INCUS_WEB_PROVISIONER_MAX_OUTPUT_BYTES" \
   "workspace tuple did not match host provisioner metadata" \
+  "withIncusProject(path)" \
+  "project=\${encodeURIComponent(incusProject)}" \
   "INCUS_WEB_PROVISIONER_SOCKET_MODE" \
   "chmod(socketPath, socketMode)" \
   "GetWorkspaceStatus" \

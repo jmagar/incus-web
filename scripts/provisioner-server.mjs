@@ -261,12 +261,22 @@ function killProcessGroup(child, signal) {
 }
 
 async function incusJson(args, options) {
+  if (args[0] === "query" && typeof args[1] === "string") {
+    const path = withIncusProject(args[1]);
+    const output = await run("incus", ["query", path, ...args.slice(2)], options);
+    return JSON.parse(output || "{}");
+  }
   const output = await run("incus", ["--project", incusProject, ...args], options);
   return JSON.parse(output || "{}");
 }
 
 async function incusText(args, options) {
   return (await run("incus", ["--project", incusProject, ...args], options)).trim();
+}
+
+function withIncusProject(path) {
+  const separator = path.includes("?") ? "&" : "?";
+  return `${path}${separator}project=${encodeURIComponent(incusProject)}`;
 }
 
 async function getWorkspaceStatus(command, options) {
