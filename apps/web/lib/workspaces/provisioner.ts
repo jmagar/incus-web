@@ -34,7 +34,7 @@ function configuredOwner(actor: ActorContext): ConfiguredOwner | undefined {
   const email = process.env.INCUS_WEB_WORKSPACE_OWNER_EMAIL?.trim();
   if (email) return { userId: `oidc:${email}`, email: email.toLowerCase() };
 
-  const ownerMode = process.env.INCUS_WEB_WORKSPACE_OWNER_MODE ?? "authenticated";
+  const ownerMode = process.env.INCUS_WEB_WORKSPACE_OWNER_MODE ?? "none";
   if (ownerMode === "authenticated") {
     return {
       userId: actor.userId,
@@ -45,14 +45,9 @@ function configuredOwner(actor: ActorContext): ConfiguredOwner | undefined {
     return undefined;
   }
 
-  if (process.env.INCUS_WEB_ALLOW_DEV_AUTH === "1") {
-    return {
-      userId: "oidc:dev@incus-web.local",
-      email: "dev@incus-web.local",
-    };
-  }
-
-  return undefined;
+  throw new Error(
+    "INCUS_WEB_WORKSPACE_OWNER_MODE must be authenticated or none",
+  );
 }
 
 function actorMatchesOwner(actor: ActorContext, owner: ConfiguredOwner) {
@@ -124,7 +119,17 @@ export async function getWorkspaceInventory(
   actor: ActorContext,
   client?: ProvisionerClient,
 ): Promise<WorkspaceInventory> {
-  const owner = configuredOwner(actor);
+  let owner;
+  try {
+    owner = configuredOwner(actor);
+  } catch (error) {
+    return inventoryFailure(actor, "unknown", actor.requestId, {
+      code: "invalid_input",
+      message:
+        error instanceof Error ? error.message : "invalid workspace owner config",
+      retryable: false,
+    });
+  }
   if (!owner || !actorMatchesOwner(actor, owner)) {
     return { actor, workspaces: [] };
   }

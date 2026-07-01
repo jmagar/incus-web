@@ -276,7 +276,8 @@ describe("workspace inventory provisioner", () => {
     expect(inventory.workspaces).toHaveLength(0);
   });
 
-  it("uses the authenticated actor as the imported prototype owner by default", async () => {
+  it("requires explicit authenticated owner mode for actor-scoped prototype ownership", async () => {
+    vi.stubEnv("INCUS_WEB_WORKSPACE_OWNER_MODE", "authenticated");
     usePrototypeStaticMode();
     const actor = getActorFromHeaders(
       authHeaders({ email: "jacob@example.com", subject: "jacob" }),
@@ -288,14 +289,31 @@ describe("workspace inventory provisioner", () => {
     expect(inventory.workspaces[0]?.ownerUserId).toBe("oidc:jacob");
   });
 
-  it("can disable implicit authenticated ownership", async () => {
-    vi.stubEnv("INCUS_WEB_WORKSPACE_OWNER_MODE", "none");
+  it("does not implicitly assign the imported prototype to any signed-in actor", async () => {
     usePrototypeStaticMode();
     const actor = ownerActor();
 
     const inventory = await getWorkspaceInventory(actor);
 
     expect(inventory.workspaces).toHaveLength(0);
+  });
+
+  it("surfaces invalid owner mode as a configuration error", async () => {
+    vi.stubEnv("INCUS_WEB_WORKSPACE_OWNER_MODE", "typo");
+    const actor = ownerActor();
+    const client = {
+      send: vi.fn(),
+    };
+
+    const inventory = await getWorkspaceInventory(actor, client);
+
+    expect(client.send).not.toHaveBeenCalled();
+    expect(inventory.workspaces).toHaveLength(0);
+    expect(inventory.provisionerError).toMatchObject({
+      code: "invalid_input",
+      message: "INCUS_WEB_WORKSPACE_OWNER_MODE must be authenticated or none",
+      workspaceId: "unknown",
+    });
   });
 
   it("returns no workspace when provisioner status fails", async () => {
@@ -431,8 +449,9 @@ describe("workspace inventory provisioner", () => {
     });
   });
 
-  it("uses authenticated ownership in production unless disabled", async () => {
+  it("uses authenticated ownership in production only when explicitly enabled", async () => {
     vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("INCUS_WEB_WORKSPACE_OWNER_MODE", "authenticated");
     const actor = getActorFromHeaders(authHeaders({ subject: "owner-subject" }));
     const client = {
       send: vi.fn().mockResolvedValue({

@@ -90,12 +90,15 @@ require_literal "INCUS_WEB_PROVISIONER_NODE="
 require_literal "INCUS_WEB_APP_NPM="
 require_literal "ENABLE_HOST_PROVISIONER_REMOTE_DOWNLOAD="
 require_literal "ENABLE_HOST_WEB_APP="
+require_literal "ENABLE_HOST_WEB_APP=0"
 require_literal "INCUS_WEB_APP_DIR="
 require_literal "INCUS_WEB_APP_ENV_FILE="
 require_literal "INCUS_WEB_APP_USER="
 require_literal "INCUS_WEB_APP_HOST="
 require_literal "INCUS_WEB_APP_PORT="
 require_literal "INCUS_WEB_WORKSPACE_OWNER_MODE="
+require_literal "ENABLE_HOST_WEB_APP=1 requires ENABLE_HOST_PROVISIONER=1"
+require_literal "INCUS_WEB_APP_USER must be an existing unprivileged user, not root"
 require_literal "INCUS_WEB_TERMINAL_URL="
 require_literal "INCUS_WEB_WORKSPACE_ID="
 require_literal "INCUS_WEB_INCUS_PROJECT="
@@ -222,12 +225,12 @@ for needle in \
   "ENABLE_HOST_PROVISIONER=1" \
   "INCUS_WEB_PROVISIONER_TOKEN=" \
   "INCUS_WEB_PROVISIONER_SOCKET=/run/incus-web/provisioner.sock" \
-  "INCUS_WEB_PROVISIONER_SOCKET_MODE=0660" \
-  "INCUS_WEB_PROVISIONER_GROUP=incus-web" \
-  "ENABLE_HOST_PROVISIONER_REMOTE_DOWNLOAD=0" \
-  "ENABLE_HOST_WEB_APP=1" \
-  "INCUS_WEB_APP_PORT=3090" \
-  "INCUS_WEB_WORKSPACE_OWNER_MODE=authenticated"; do
+	  "INCUS_WEB_PROVISIONER_SOCKET_MODE=0660" \
+	  "INCUS_WEB_PROVISIONER_GROUP=incus-web" \
+	  "ENABLE_HOST_PROVISIONER_REMOTE_DOWNLOAD=0" \
+	  "ENABLE_HOST_WEB_APP=" \
+	  "INCUS_WEB_APP_PORT=3090" \
+	  "INCUS_WEB_WORKSPACE_OWNER_MODE=authenticated"; do
   if ! grep -Fq -- "$needle" "$env_example"; then
     printf 'missing expected provisioner env example: %s\n' "$needle" >&2
     exit 1
@@ -246,9 +249,10 @@ for needle in \
   "write_host_provisioner_env()" \
   "write_host_provisioner_env \"\$name\"" \
   "configure_host_provisioner()" \
-  "configure_host_web_app()" \
-  "ensure_host_web_app_identity()" \
-  "write_host_web_app_env()" \
+	  "configure_host_web_app()" \
+	  "ensure_host_web_app_identity()" \
+	  "host_web_app_source_stamp()" \
+	  "write_host_web_app_env()" \
   "host provisioner server is missing locally; set ENABLE_HOST_PROVISIONER_REMOTE_DOWNLOAD=1" \
   "INCUS_WEB_PROVISIONER_SERVER_URL must use https://" \
   "curl --proto '=https' --tlsv1.2 -fsSL \"\$INCUS_WEB_PROVISIONER_SERVER_URL\"" \
@@ -265,21 +269,36 @@ for needle in \
   "ProtectSystem=full" \
   "EnvironmentFile=\$INCUS_WEB_PROVISIONER_ENV_FILE" \
   "ExecStart=\$INCUS_WEB_PROVISIONER_NODE \$INCUS_WEB_PROVISIONER_INSTALL_PATH" \
-  "incus-web-app.service" \
-  "Description=incus-web Next.js control plane" \
-  "EnvironmentFile=\$INCUS_WEB_APP_ENV_FILE" \
-  "ExecStart=\$INCUS_WEB_APP_NPM run start -- --hostname" \
-  "INCUS_WEB_APP_HOST=%s" \
-  "INCUS_WEB_APP_PORT=%s" \
-  "\"\$INCUS_WEB_APP_NPM\" ci --prefix \"\$INCUS_WEB_APP_DIR\"" \
-  "sudo_cmd test -f \"\$INCUS_WEB_PROVISIONER_ENV_FILE\"" \
+	  "incus-web-app.service" \
+	  "Description=incus-web Next.js control plane" \
+	  "User=\$INCUS_WEB_APP_USER" \
+	  "SupplementaryGroups=\$INCUS_WEB_PROVISIONER_GROUP" \
+	  "WorkingDirectory=/opt/incus-web-app" \
+	  "Environment=HOME=/var/lib/incus-web-app" \
+	  "EnvironmentFile=\$INCUS_WEB_APP_ENV_FILE" \
+	  "ExecStart=\$INCUS_WEB_APP_NPM run start -- --hostname" \
+	  "BindReadOnlyPaths=\$INCUS_WEB_APP_DIR:/opt/incus-web-app" \
+	  "StateDirectory=incus-web-app" \
+	  "CacheDirectory=incus-web-app" \
+	  "ProtectHome=read-only" \
+	  "ProtectSystem=full" \
+	  "INCUS_WEB_APP_HOST=%s" \
+	  "INCUS_WEB_APP_PORT=%s" \
+	  "\"\$INCUS_WEB_APP_NPM\" ci --prefix \"\$INCUS_WEB_APP_DIR\"" \
+	  "host Next.js web app build is current" \
+	  "sudo_cmd test -f \"\$INCUS_WEB_PROVISIONER_ENV_FILE\"" \
   "sudo_cmd install -m 640 -g \"\$INCUS_WEB_PROVISIONER_GROUP\" \"\$tmp_file\" \"\$INCUS_WEB_PROVISIONER_ENV_FILE\"" \
-  "sudo_cmd install -m 640 -g \"\$INCUS_WEB_PROVISIONER_GROUP\" \"\$tmp_file\" \"\$token_file\""; do
+	  "sudo_cmd install -m 640 -g \"\$INCUS_WEB_PROVISIONER_GROUP\" \"\$tmp_file\" \"\$token_file\""; do
   if ! grep -Fq -- "$needle" "$lib"; then
     printf 'missing expected host provisioner deploy content: %s\n' "$needle" >&2
     exit 1
   fi
 done
+
+if grep -Fq -- "Group=\$INCUS_WEB_APP_USER" "$lib"; then
+  printf 'host web app systemd unit must not assume user and group names match\n' >&2
+  exit 1
+fi
 
 if ! grep -Fq -- "scripts/provisioner-server.mjs" "$contract_doc" "$root/docs/contracts/multi-tenant-control-plane-v1.md"; then
   printf 'missing expected provisioner server docs\n' >&2

@@ -75,10 +75,16 @@ main() {
   INCUS_WEB_PROVISIONER_NODE="${INCUS_WEB_PROVISIONER_NODE:-/usr/bin/node}"
   INCUS_WEB_APP_NPM="${INCUS_WEB_APP_NPM:-/usr/bin/npm}"
   ENABLE_HOST_PROVISIONER_REMOTE_DOWNLOAD="${ENABLE_HOST_PROVISIONER_REMOTE_DOWNLOAD:-0}"
-  ENABLE_HOST_WEB_APP="${ENABLE_HOST_WEB_APP:-1}"
   INCUS_WEB_APP_DIR="${INCUS_WEB_APP_DIR:-$SCRIPT_DIR/apps/web}"
+  if [[ -z "${ENABLE_HOST_WEB_APP:-}" ]]; then
+    if [[ -f "$INCUS_WEB_APP_DIR/package.json" ]]; then
+      ENABLE_HOST_WEB_APP=1
+    else
+      ENABLE_HOST_WEB_APP=0
+    fi
+  fi
   INCUS_WEB_APP_ENV_FILE="${INCUS_WEB_APP_ENV_FILE:-/etc/incus-web/web.env}"
-  INCUS_WEB_APP_USER="${INCUS_WEB_APP_USER:-$(id -un)}"
+  INCUS_WEB_APP_USER="${INCUS_WEB_APP_USER:-incus-web-app}"
   INCUS_WEB_APP_HOST="${INCUS_WEB_APP_HOST:-$OIDC_HOST_BIND}"
   INCUS_WEB_APP_PORT="${INCUS_WEB_APP_PORT:-3090}"
   INCUS_WEB_WORKSPACE_OWNER_MODE="${INCUS_WEB_WORKSPACE_OWNER_MODE:-authenticated}"
@@ -127,6 +133,13 @@ main() {
       die "TERMINAL_BACKEND must be wetty or ghostty-web"
       ;;
   esac
+
+  if [[ "$ENABLE_HOST_WEB_APP" == "1" && "$ENABLE_HOST_PROVISIONER" != "1" ]]; then
+    die "ENABLE_HOST_WEB_APP=1 requires ENABLE_HOST_PROVISIONER=1 because the app reads the host provisioner env"
+  fi
+  if [[ "$ENABLE_HOST_WEB_APP" == "1" && "$INCUS_WEB_APP_USER" == "root" ]]; then
+    die "INCUS_WEB_APP_USER must be an existing unprivileged user, not root"
+  fi
 
   install_incus_if_needed
   ensure_incus_ready

@@ -118,4 +118,38 @@ describe("provisioner status adapter", () => {
 
     expect(workspace.terminalUrl).toBe("/terminal/");
   });
+
+  it("accepts absolute http terminal URLs", () => {
+    process.env.INCUS_WEB_TERMINAL_URL = "https://incus-web.example.com/terminal/";
+
+    const workspace = statusToWorkspace(
+      {
+        workspaceId: "workspace-incus-web",
+        state: "running",
+        incusProject: "default",
+        incusContainer: "incus-web",
+        lastCheckedAt: "2026-07-01T00:00:00.000Z",
+      },
+      "oidc:owner@example.com",
+    );
+
+    expect(workspace.terminalUrl).toBe("https://incus-web.example.com/terminal/");
+  });
+
+  it("rejects unsafe terminal URL schemes", () => {
+    process.env.INCUS_WEB_TERMINAL_URL = "javascript:alert(1)";
+
+    expect(() =>
+      statusToWorkspace(
+        {
+          workspaceId: "workspace-incus-web",
+          state: "running",
+          incusProject: "default",
+          incusContainer: "incus-web",
+          lastCheckedAt: "2026-07-01T00:00:00.000Z",
+        },
+        "oidc:owner@example.com",
+      ),
+    ).toThrow("INCUS_WEB_TERMINAL_URL must be a relative path or http(s) URL");
+  });
 });

@@ -81,7 +81,7 @@ export function statusToWorkspace(
         : "host quota pending",
     },
     setup: setupSummary(status),
-    terminalUrl: optionalStringEnv("INCUS_WEB_TERMINAL_URL"),
+    terminalUrl: optionalUrlEnv("INCUS_WEB_TERMINAL_URL"),
     accessNote:
       "Single-container prototype. Terminal routing moves behind workspace-scoped sessions before multi-user sharing.",
     createdAt,
@@ -124,7 +124,17 @@ function stringEnv(name: string, fallback: string): string {
   return value;
 }
 
-function optionalStringEnv(name: string): string | undefined {
+function optionalUrlEnv(name: string): string | undefined {
   const value = process.env[name]?.trim();
-  return value || undefined;
+  if (!value) return undefined;
+  if (value.startsWith("/") && !value.startsWith("//")) return value;
+  try {
+    const url = new URL(value);
+    if (url.protocol === "http:" || url.protocol === "https:") {
+      return value;
+    }
+  } catch {
+    // Fall through to the config error below.
+  }
+  throw new Error(`${name} must be a relative path or http(s) URL`);
 }

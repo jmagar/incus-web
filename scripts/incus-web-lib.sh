@@ -636,8 +636,36 @@ ensure_host_web_app_systemd() {
 }
 
 ensure_host_web_app_identity() {
-  getent passwd "$INCUS_WEB_APP_USER" >/dev/null 2>&1 || die "host web app user does not exist: $INCUS_WEB_APP_USER"
   getent group "$INCUS_WEB_PROVISIONER_GROUP" >/dev/null 2>&1 || sudo_cmd groupadd --system "$INCUS_WEB_PROVISIONER_GROUP"
+  if ! id -u "$INCUS_WEB_APP_USER" >/dev/null 2>&1; then
+    if [[ "$INCUS_WEB_APP_USER" != "incus-web-app" ]]; then
+      die "host web app user does not exist: $INCUS_WEB_APP_USER"
+    fi
+    sudo_cmd useradd --system \
+      --home-dir /var/lib/incus-web-app \
+      --create-home \
+      --shell /usr/sbin/nologin \
+      --gid "$INCUS_WEB_PROVISIONER_GROUP" \
+      "$INCUS_WEB_APP_USER"
+  else
+    sudo_cmd usermod -aG "$INCUS_WEB_PROVISIONER_GROUP" "$INCUS_WEB_APP_USER"
+  fi
+}
+
+host_web_app_source_stamp() {
+  (
+    cd "$INCUS_WEB_APP_DIR"
+    {
+      for path in package.json package-lock.json next.config.ts next.config.mjs tsconfig.json postcss.config.mjs components.json app components lib public; do
+        [[ -e "$path" ]] || continue
+        if [[ -d "$path" ]]; then
+          find "$path" -type f -print0 | sort -z | xargs -0 -r sha256sum
+        else
+          sha256sum "$path"
+        fi
+      done
+    } | sha256sum | awk '{print $1}'
+  )
 }
 
 write_host_web_app_env() {
@@ -670,6 +698,8 @@ write_host_web_app_env() {
 }
 
 configure_host_web_app() {
+  local source_stamp
+  local stamp_file
   local tmp_unit
 
   if [[ "$ENABLE_HOST_WEB_APP" != "1" ]]; then
@@ -687,10 +717,18 @@ configure_host_web_app() {
   [[ -x "$INCUS_WEB_APP_NPM" ]] || die "npm is required for the host web app: $INCUS_WEB_APP_NPM"
   sudo_cmd test -f "$INCUS_WEB_PROVISIONER_ENV_FILE" || die "host provisioner env file is required before starting the web app: $INCUS_WEB_PROVISIONER_ENV_FILE"
 
-  log "building host Next.js web app"
-  "$INCUS_WEB_APP_NPM" ci --prefix "$INCUS_WEB_APP_DIR"
-  "$INCUS_WEB_APP_NPM" --prefix "$INCUS_WEB_APP_DIR" run build
+  source_stamp="$(host_web_app_source_stamp)"
+  stamp_file="$INCUS_WEB_APP_DIR/.next/incus-web-build.stamp"
+  if [[ -f "$stamp_file" && "$(cat "$stamp_file")" == "$source_stamp" ]]; then
+    log "host Next.js web app build is current"
+  else
+    log "building host Next.js web app"
+    "$INCUS_WEB_APP_NPM" ci --prefix "$INCUS_WEB_APP_DIR"
+    "$INCUS_WEB_APP_NPM" --prefix "$INCUS_WEB_APP_DIR" run build
+    printf '%s\n' "$source_stamp" >"$stamp_file"
+  fi
   write_host_web_app_env
+  sudo_cmd install -d -m 755 /opt/incus-web-app
 
   tmp_unit="$(mktemp)"
   cat >"$tmp_unit" <<EOF
@@ -702,16 +740,22 @@ Wants=network-online.target incus-web-provisioner.service
 [Service]
 Type=simple
 User=$INCUS_WEB_APP_USER
-Group=$INCUS_WEB_APP_USER
 SupplementaryGroups=$INCUS_WEB_PROVISIONER_GROUP
-WorkingDirectory=$INCUS_WEB_APP_DIR
+WorkingDirectory=/opt/incus-web-app
+Environment=HOME=/var/lib/incus-web-app
 EnvironmentFile=$INCUS_WEB_PROVISIONER_ENV_FILE
 EnvironmentFile=$INCUS_WEB_APP_ENV_FILE
 ExecStart=$INCUS_WEB_APP_NPM run start -- --hostname \$INCUS_WEB_APP_HOST --port \$INCUS_WEB_APP_PORT
 Restart=always
 RestartSec=2
+BindReadOnlyPaths=$INCUS_WEB_APP_DIR:/opt/incus-web-app
+StateDirectory=incus-web-app
+CacheDirectory=incus-web-app
+UMask=0077
 NoNewPrivileges=true
 PrivateTmp=true
+ProtectHome=read-only
+ProtectSystem=full
 RestrictSUIDSGID=true
 LockPersonality=true
 
