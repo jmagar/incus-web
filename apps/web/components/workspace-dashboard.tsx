@@ -5,7 +5,6 @@ import {
   CircleGaugeIcon,
   DatabaseIcon,
   FolderGit2Icon,
-  NetworkIcon,
   ShieldCheckIcon,
   SparklesIcon,
   TerminalIcon,
@@ -13,7 +12,6 @@ import {
 } from "lucide-react";
 
 import { Badge } from "@/components/ui/aurora/badge";
-import { Button } from "@/components/ui/aurora/button";
 import {
   Card,
   CardContent,
@@ -28,11 +26,8 @@ import {
 import { Separator } from "@/components/ui/aurora/separator";
 import { StatCard, StatGrid } from "@/components/ui/aurora/stat-card";
 import { StatusIndicator } from "@/components/ui/aurora/status-indicator";
-import {
-  Toolbar,
-  ToolbarGroup,
-  ToolbarSeparator,
-} from "@/components/ui/aurora/toolbar";
+import { Toolbar, ToolbarGroup } from "@/components/ui/aurora/toolbar";
+import { WorkspaceActions } from "@/components/workspace-actions";
 import type {
   CheckStatus,
   Workspace,
@@ -109,29 +104,7 @@ function WorkspaceCard({ workspace }: { workspace: Workspace }) {
               label={workspace.state}
             />
           </ToolbarGroup>
-          <ToolbarSeparator />
-          <ToolbarGroup>
-            <Button variant="neutral" iconLeft={<NetworkIcon aria-hidden="true" />}>
-              Share
-            </Button>
-            {workspace.terminalUrl ? (
-              <Button
-                asChild
-                variant="aurora"
-                iconLeft={<TerminalIcon aria-hidden="true" />}
-              >
-                <a href={workspace.terminalUrl}>Open terminal</a>
-              </Button>
-            ) : (
-              <Button
-                variant="neutral"
-                disabled
-                iconLeft={<TerminalIcon aria-hidden="true" />}
-              >
-                Terminal pending
-              </Button>
-            )}
-          </ToolbarGroup>
+          <WorkspaceActions workspace={workspace} />
         </Toolbar>
       </CardHeader>
 

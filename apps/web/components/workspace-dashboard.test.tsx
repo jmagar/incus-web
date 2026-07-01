@@ -1,10 +1,16 @@
 import "@testing-library/jest-dom/vitest";
 
 import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { WorkspaceDashboard } from "@/components/workspace-dashboard";
 import type { WorkspaceInventory } from "@/lib/workspaces/types";
+
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({
+    refresh: vi.fn(),
+  }),
+}));
 
 const inventory: WorkspaceInventory = {
   actor: {
@@ -56,6 +62,9 @@ describe("WorkspaceDashboard", () => {
     expect(screen.getByText("Packages")).toBeInTheDocument();
     expect(screen.getByText("mise")).toBeInTheDocument();
     expect(screen.getByText("dotfiles")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /restart/i })).toBeEnabled();
+    expect(screen.getByRole("button", { name: /stop/i })).toBeEnabled();
+    expect(screen.getByRole("button", { name: /share later/i })).toBeDisabled();
     expect(
       screen.getByRole("button", { name: /terminal pending/i }),
     ).toBeDisabled();

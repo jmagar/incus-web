@@ -73,12 +73,10 @@ export function statusToWorkspace(
     resourceProfileId: "local-dev",
     resources: {
       cpu: status.cpuCount ? `${status.cpuCount} vCPU` : "unknown",
-      memory: status.memoryLimitBytes
-        ? `${Math.round(status.memoryLimitBytes / gib)} GiB`
-        : "unknown",
-      storage: status.rootDiskLimitBytes
-        ? `${Math.round(status.rootDiskLimitBytes / gib)} GiB`
-        : "host quota pending",
+      memory: bytePair(status.memoryUsedBytes, status.memoryLimitBytes),
+      storage: bytePair(status.rootDiskUsedBytes, status.rootDiskLimitBytes, {
+        empty: "host quota pending",
+      }),
     },
     setup: setupSummary(status),
     terminalUrl: optionalUrlEnv("INCUS_WEB_TERMINAL_URL"),
@@ -87,6 +85,41 @@ export function statusToWorkspace(
     createdAt,
     updatedAt: status.lastCheckedAt,
   };
+}
+
+function bytePair(
+  usedBytes: number | undefined,
+  limitBytes: number | undefined,
+  { empty = "unknown" }: { empty?: string } = {},
+): string {
+  if (usedBytes !== undefined && limitBytes !== undefined) {
+    return `${formatBytes(usedBytes)} / ${formatBytes(limitBytes)}`;
+  }
+  if (limitBytes !== undefined) {
+    return formatBytes(limitBytes);
+  }
+  if (usedBytes !== undefined) {
+    return `${formatBytes(usedBytes)} used`;
+  }
+  return empty;
+}
+
+function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes < 0) {
+    return "unknown";
+  }
+  const units = ["B", "KiB", "MiB", "GiB", "TiB"];
+  let value = bytes;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+  const rounded =
+    value >= 10 || unitIndex === 0 || Number.isInteger(value)
+      ? Math.round(value).toString()
+      : value.toFixed(1);
+  return `${rounded} ${units[unitIndex]}`;
 }
 
 function setupSummary(status: WorkspaceRuntimeStatus): WorkspaceSetupSummary {

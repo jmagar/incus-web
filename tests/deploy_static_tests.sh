@@ -353,7 +353,10 @@ for needle in \
   "INCUS_WEB_PROVISIONER_SOCKET_MODE" \
   "chmod(socketPath, socketMode)" \
   "GetWorkspaceStatus" \
-  "failed to read workspace status from Incus"; do
+  "StartWorkspace" \
+  "StopWorkspace" \
+  "RestartWorkspace" \
+  "failed to complete workspace operation through Incus"; do
   if ! grep -Fq -- "$needle" "$root/scripts/provisioner-server.mjs"; then
     printf 'missing expected host provisioner server content: %s\n' "$needle" >&2
     exit 1
