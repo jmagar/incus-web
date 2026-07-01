@@ -1,10 +1,22 @@
 import type {
   ActorContext,
-  Workspace,
   WorkspaceInventory,
 } from "@/lib/workspaces/types";
-
-const now = "2026-06-30T00:00:00.000Z";
+import {
+  PROVISIONER_CONTRACT_VERSION,
+  type ProvisionerCommand,
+  type ProvisionerError,
+  validateProvisionerOperation,
+} from "@/lib/provisioner/contracts";
+import {
+  createStaticPrototypeStatusClient,
+  type ProvisionerClient,
+} from "@/lib/provisioner/client";
+import {
+  buildPrototypeWorkspaceRef,
+  prototypeRuntimeStatus,
+  statusToWorkspace,
+} from "@/lib/provisioner/status-adapter";
 
 type ConfiguredOwner = {
   userId: string;
@@ -15,13 +27,14 @@ function configuredOwner(): ConfiguredOwner | undefined {
   const subject = process.env.INCUS_WEB_WORKSPACE_OWNER_SUBJECT?.trim();
   if (subject) return { userId: `oidc:${subject}` };
 
+  if (process.env.NODE_ENV === "production") {
+    return undefined;
+  }
+
   const email = process.env.INCUS_WEB_WORKSPACE_OWNER_EMAIL?.trim();
   if (email) return { userId: `oidc:${email}`, email: email.toLowerCase() };
 
-  if (
-    process.env.INCUS_WEB_ALLOW_DEV_AUTH === "1" ||
-    process.env.NODE_ENV !== "production"
-  ) {
+  if (process.env.INCUS_WEB_ALLOW_DEV_AUTH === "1") {
     return {
       userId: "oidc:dev@incus-web.local",
       email: "dev@incus-web.local",
@@ -38,48 +51,156 @@ function actorMatchesOwner(actor: ActorContext, owner: ConfiguredOwner) {
   );
 }
 
-function currentWorkspace(ownerUserId: string): Workspace {
-  return {
-    id: "workspace-incus-web",
-    ownerUserId,
-    name: "incus-web",
-    slug: "incus-web",
-    incusProject: "incus-web",
-    incusContainer: "incus-web",
-    templateVersion: "prototype",
-    state: "running",
-    resourceProfileId: "local-dev",
-    resources: {
-      cpu: "2 vCPU",
-      memory: "4 GiB",
-      storage: "host quota pending",
-    },
-    setup: {
-      phase: "ready",
-      dotfilesStatus: "unknown",
-      miseStatus: "unknown",
-      commandStatus: "unknown",
-      packageStatus: "unknown",
-      updatedAt: now,
-    },
-    accessNote:
-      "Single-container prototype. Terminal routing moves behind workspace-scoped sessions before multi-user sharing.",
-    createdAt: now,
-    updatedAt: now,
-  };
+function defaultProvisionerClient(ownerUserId: string): ProvisionerClient {
+  const workspace = buildPrototypeWorkspaceRef(ownerUserId);
+  if (process.env.INCUS_WEB_PROVISIONER_MODE === "prototype-static") {
+    if (process.env.NODE_ENV === "production") {
+      return failedProvisionerClient(
+        "invalid_state",
+        "prototype-static provisioner mode is not allowed in production",
+        workspace.id,
+      );
+    }
+    try {
+      return createStaticPrototypeStatusClient(prototypeRuntimeStatus(workspace));
+    } catch (error) {
+      return failedProvisionerClient(
+        "invalid_input",
+        error instanceof Error ? error.message : "invalid prototype config",
+        workspace.id,
+      );
+    }
+  }
+
+  return failedProvisionerClient(
+    "unauthenticated_service",
+    "host provisioner transport is not configured",
+    workspace.id,
+  );
 }
 
 export async function getWorkspaceInventory(
   actor: ActorContext,
+  client?: ProvisionerClient,
 ): Promise<WorkspaceInventory> {
   const owner = configuredOwner();
-  const workspaces =
-    owner && actorMatchesOwner(actor, owner)
-      ? [currentWorkspace(owner.userId)]
-      : [];
+  if (!owner || !actorMatchesOwner(actor, owner)) {
+    return { actor, workspaces: [] };
+  }
+
+  const workspace = buildPrototypeWorkspaceRef(owner.userId);
+  const provisioner = client ?? defaultProvisionerClient(owner.userId);
+  const command: ProvisionerCommand<"GetWorkspaceStatus"> = {
+    version: PROVISIONER_CONTRACT_VERSION,
+    requestId: actor.requestId,
+    type: "GetWorkspaceStatus",
+    actor: {
+      userId: actor.userId,
+      oidcSubject: actor.oidcSubject,
+      email: actor.email,
+      displayName: actor.displayName,
+    },
+    workspace,
+    payload: {},
+  };
+  const operation = await provisioner.send(command);
+
+  const validated = validateProvisionerOperation(
+    operation,
+    workspace,
+    "GetWorkspaceStatus",
+  );
+  if (!validated.ok) {
+    return inventoryFailure(actor, workspace.id, command.requestId, validated.error);
+  }
+  if (validated.value.status !== "succeeded") {
+    return inventoryFailure(
+      actor,
+      workspace.id,
+      validated.value.requestId,
+      validated.value.error ?? {
+        code: "invalid_state",
+        message: `provisioner operation is ${validated.value.status}`,
+        retryable: true,
+      },
+      validated.value.id,
+    );
+  }
+  if (!validated.value.result) {
+    return inventoryFailure(actor, workspace.id, validated.value.requestId, {
+      code: "invalid_state",
+      message: "provisioner succeeded without a workspace status result",
+      retryable: false,
+    });
+  }
 
   return {
     actor,
-    workspaces,
+    workspaces: [statusToWorkspace(validated.value.result, owner.userId)],
   };
+}
+
+function failedProvisionerClient(
+  code: ProvisionerError["code"],
+  message: string,
+  workspaceId: string,
+): ProvisionerClient {
+  return {
+    async send(command) {
+      const requestId = isProvisionerCommand(command)
+        ? command.requestId
+        : "unknown";
+      return {
+        id: `failed-${requestId}`,
+        requestId,
+        type: "GetWorkspaceStatus",
+        workspaceId,
+        status: "failed",
+        error: {
+          code,
+          message,
+          retryable: false,
+        },
+        completedAt: new Date().toISOString(),
+      };
+    },
+  };
+}
+
+function inventoryFailure(
+  actor: ActorContext,
+  workspaceId: string,
+  requestId: string,
+  error: ProvisionerError,
+  operationId?: string,
+): WorkspaceInventory {
+  console.warn("workspace provisioner failed", {
+    requestId,
+    actor: actor.userId,
+    workspaceId,
+    operationId,
+    code: error.code,
+  });
+  return {
+    actor,
+    workspaces: [],
+    provisionerError: {
+      code: error.code,
+      message: error.message,
+      requestId,
+      workspaceId,
+      operationId,
+    },
+  };
+}
+
+function isProvisionerCommand(
+  command: unknown,
+): command is ProvisionerCommand<"GetWorkspaceStatus"> {
+  return (
+    typeof command === "object" &&
+    command !== null &&
+    "requestId" in command &&
+    typeof command.requestId === "string"
+  );
 }
