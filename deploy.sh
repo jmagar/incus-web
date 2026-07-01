@@ -61,6 +61,22 @@ main() {
   INCUS_WEB_BOOTSTRAP_SERVER_URL="${INCUS_WEB_BOOTSTRAP_SERVER_URL:-https://raw.githubusercontent.com/jmagar/incus-web/main/scripts/bootstrap-server.mjs}"
   INCUS_WEB_IDENTITY_PROXY="${INCUS_WEB_IDENTITY_PROXY:-$SCRIPT_DIR/scripts/identity-proxy.mjs}"
   INCUS_WEB_IDENTITY_PROXY_URL="${INCUS_WEB_IDENTITY_PROXY_URL:-https://raw.githubusercontent.com/jmagar/incus-web/main/scripts/identity-proxy.mjs}"
+  ENABLE_HOST_PROVISIONER="${ENABLE_HOST_PROVISIONER:-1}"
+  INCUS_WEB_PROVISIONER_SERVER="${INCUS_WEB_PROVISIONER_SERVER:-$SCRIPT_DIR/scripts/provisioner-server.mjs}"
+  INCUS_WEB_PROVISIONER_SERVER_URL="${INCUS_WEB_PROVISIONER_SERVER_URL:-https://raw.githubusercontent.com/jmagar/incus-web/main/scripts/provisioner-server.mjs}"
+  INCUS_WEB_PROVISIONER_INSTALL_PATH="${INCUS_WEB_PROVISIONER_INSTALL_PATH:-/usr/local/lib/incus-web/provisioner-server.mjs}"
+  INCUS_WEB_PROVISIONER_ENV_FILE="${INCUS_WEB_PROVISIONER_ENV_FILE:-/etc/incus-web/provisioner.env}"
+  INCUS_WEB_PROVISIONER_TOKEN_FILE="${INCUS_WEB_PROVISIONER_TOKEN_FILE:-/etc/incus-web/provisioner.token}"
+  INCUS_WEB_PROVISIONER_SOCKET="${INCUS_WEB_PROVISIONER_SOCKET:-/run/incus-web/provisioner.sock}"
+  INCUS_WEB_PROVISIONER_SOCKET_MODE="${INCUS_WEB_PROVISIONER_SOCKET_MODE:-0660}"
+  INCUS_WEB_PROVISIONER_USER="${INCUS_WEB_PROVISIONER_USER:-incus-web-provisioner}"
+  INCUS_WEB_PROVISIONER_GROUP="${INCUS_WEB_PROVISIONER_GROUP:-incus-web}"
+  INCUS_WEB_PROVISIONER_INCUS_GROUP="${INCUS_WEB_PROVISIONER_INCUS_GROUP:-incus-admin}"
+  INCUS_WEB_PROVISIONER_NODE="${INCUS_WEB_PROVISIONER_NODE:-/usr/bin/node}"
+  ENABLE_HOST_PROVISIONER_REMOTE_DOWNLOAD="${ENABLE_HOST_PROVISIONER_REMOTE_DOWNLOAD:-0}"
+  INCUS_WEB_WORKSPACE_ID="${INCUS_WEB_WORKSPACE_ID:-workspace-incus-web}"
+  INCUS_WEB_INCUS_PROJECT="${INCUS_WEB_INCUS_PROJECT:-${INCUS_PROJECT:-}}"
+  INCUS_WEB_INCUS_CONTAINER="${INCUS_WEB_INCUS_CONTAINER:-$CONTAINER_NAME}"
   INCUS_WEB_INFO_SCRIPT="${INCUS_WEB_INFO_SCRIPT:-$SCRIPT_DIR/scripts/incus-web-info.sh}"
   INCUS_WEB_INFO_SCRIPT_URL="${INCUS_WEB_INFO_SCRIPT_URL:-https://raw.githubusercontent.com/jmagar/incus-web/main/scripts/incus-web-info.sh}"
   INCUS_WEB_OPEN_SCRIPT="${INCUS_WEB_OPEN_SCRIPT:-$SCRIPT_DIR/scripts/incus-web-open.sh}"
@@ -105,6 +121,9 @@ main() {
 
   install_incus_if_needed
   ensure_incus_ready
+  if [[ -z "$INCUS_WEB_INCUS_PROJECT" ]]; then
+    INCUS_WEB_INCUS_PROJECT="$(active_incus_project)"
+  fi
   ensure_agent_network
   ensure_profile_paths
   ensure_incus_profile
@@ -120,6 +139,7 @@ main() {
       provision_container "$CONTAINER_NAME"
       configure_access "$CONTAINER_NAME"
       validate_container "$CONTAINER_NAME"
+      configure_host_provisioner "$CONTAINER_NAME"
       log "ready"
       log "container: $CONTAINER_NAME"
       log "workspace: $HOST_WORKSPACE -> $CONTAINER_WORKSPACE"
@@ -150,6 +170,7 @@ main() {
   provision_container "$CONTAINER_NAME"
   configure_access "$CONTAINER_NAME"
   validate_container "$CONTAINER_NAME"
+  configure_host_provisioner "$CONTAINER_NAME"
 
   log "ready"
   log "container: $CONTAINER_NAME"

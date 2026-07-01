@@ -75,6 +75,24 @@ require_literal "incus-web-open"
 require_literal "INCUS_WEB_INFO_SCRIPT"
 require_literal "INCUS_WEB_IDENTITY_PROXY"
 require_literal "INCUS_WEB_OPEN_SCRIPT"
+require_literal "ENABLE_HOST_PROVISIONER="
+require_literal "INCUS_WEB_PROVISIONER_SERVER="
+require_literal "INCUS_WEB_PROVISIONER_SERVER_URL="
+require_literal "INCUS_WEB_PROVISIONER_INSTALL_PATH="
+require_literal "INCUS_WEB_PROVISIONER_ENV_FILE="
+require_literal "INCUS_WEB_PROVISIONER_TOKEN_FILE="
+require_literal "INCUS_WEB_PROVISIONER_SOCKET="
+require_literal "INCUS_WEB_PROVISIONER_SOCKET_MODE="
+require_literal "INCUS_WEB_PROVISIONER_USER="
+require_literal "INCUS_WEB_PROVISIONER_GROUP="
+require_literal "INCUS_WEB_PROVISIONER_INCUS_GROUP="
+require_literal "INCUS_WEB_PROVISIONER_NODE="
+require_literal "ENABLE_HOST_PROVISIONER_REMOTE_DOWNLOAD="
+require_literal "INCUS_WEB_WORKSPACE_ID="
+require_literal "INCUS_WEB_INCUS_PROJECT="
+require_literal "INCUS_WEB_INCUS_PROJECT=\"\${INCUS_WEB_INCUS_PROJECT:-\${INCUS_PROJECT:-}}\""
+require_literal "INCUS_WEB_INCUS_PROJECT=\"\$(active_incus_project)\""
+require_literal "INCUS_WEB_INCUS_CONTAINER="
 require_literal "BROWSER=/usr/local/bin/incus-web-open"
 require_literal "INCUS_WEB_WORKSPACE_LABEL="
 require_literal "--upstream=\"http://127.0.0.1:\$SETUP_PORT/setup/\""
@@ -135,6 +153,7 @@ require_literal "expect_blocked_lan 172.16.0.1 80"
 require_literal "expect_blocked_lan 192.168.0.1 80"
 require_literal "expect_blocked_lan 169.254.0.1 80"
 require_literal "validate_container \"\$CONTAINER_NAME\""
+require_literal "configure_host_provisioner \"\$CONTAINER_NAME\""
 require_literal "INCUS_PROFILE_YAML="
 require_literal "INCUS_PROFILE_NAME="
 require_literal "INCUS_PROFILE_URL="
@@ -189,9 +208,51 @@ fi
 for needle in \
   "INCUS_WEB_WORKSPACE_ID=workspace-incus-web" \
   "INCUS_WEB_INCUS_PROJECT=default" \
-  "INCUS_WEB_INCUS_CONTAINER=incus-web"; do
+  "INCUS_WEB_INCUS_CONTAINER=" \
+  "ENABLE_HOST_PROVISIONER=1" \
+  "INCUS_WEB_PROVISIONER_TOKEN=" \
+  "INCUS_WEB_PROVISIONER_SOCKET=/run/incus-web/provisioner.sock" \
+  "INCUS_WEB_PROVISIONER_SOCKET_MODE=0660" \
+  "INCUS_WEB_PROVISIONER_GROUP=incus-web" \
+  "ENABLE_HOST_PROVISIONER_REMOTE_DOWNLOAD=0"; do
   if ! grep -Fq -- "$needle" "$env_example"; then
-    printf 'missing expected imported workspace env example: %s\n' "$needle" >&2
+    printf 'missing expected provisioner env example: %s\n' "$needle" >&2
+    exit 1
+  fi
+done
+
+for needle in \
+  "ensure_host_node()" \
+  "active_incus_project()" \
+  "incus_cmd project get-current" \
+  "ensure_host_provisioner_identity()" \
+  "ensure_host_provisioner_systemd()" \
+  "validate_systemd_env_value()" \
+  "install_host_provisioner_server()" \
+  "ensure_host_provisioner_token()" \
+  "write_host_provisioner_env()" \
+  "write_host_provisioner_env \"\$name\"" \
+  "configure_host_provisioner()" \
+  "host provisioner server is missing locally; set ENABLE_HOST_PROVISIONER_REMOTE_DOWNLOAD=1" \
+  "INCUS_WEB_PROVISIONER_SERVER_URL must use https://" \
+  "curl --proto '=https' --tlsv1.2 -fsSL \"\$INCUS_WEB_PROVISIONER_SERVER_URL\"" \
+  "systemctl is required for ENABLE_HOST_PROVISIONER=1" \
+  "systemd is not running; set ENABLE_HOST_PROVISIONER=0" \
+  "incus-web-provisioner.service" \
+  "User=\$INCUS_WEB_PROVISIONER_USER" \
+  "Group=\$INCUS_WEB_PROVISIONER_GROUP" \
+  "SupplementaryGroups=\$INCUS_WEB_PROVISIONER_INCUS_GROUP" \
+  "RuntimeDirectory=incus-web" \
+  "RuntimeDirectoryMode=0750" \
+  "UMask=0077" \
+  "NoNewPrivileges=true" \
+  "ProtectSystem=full" \
+  "EnvironmentFile=\$INCUS_WEB_PROVISIONER_ENV_FILE" \
+  "ExecStart=\$INCUS_WEB_PROVISIONER_NODE \$INCUS_WEB_PROVISIONER_INSTALL_PATH" \
+  "sudo_cmd install -m 640 -g \"\$INCUS_WEB_PROVISIONER_GROUP\" \"\$tmp_file\" \"\$INCUS_WEB_PROVISIONER_ENV_FILE\"" \
+  "sudo_cmd install -m 640 -g \"\$INCUS_WEB_PROVISIONER_GROUP\" \"\$tmp_file\" \"\$token_file\""; do
+  if ! grep -Fq -- "$needle" "$lib"; then
+    printf 'missing expected host provisioner deploy content: %s\n' "$needle" >&2
     exit 1
   fi
 done
@@ -216,6 +277,10 @@ if ! grep -Fq -- "Incus project \`default\` and container \`incus-web\`" "$contr
   printf 'missing expected imported prototype tuple docs\n' >&2
   exit 1
 fi
+if ! grep -Fq -- "ENABLE_HOST_PROVISIONER_REMOTE_DOWNLOAD=1" "$root/README.md"; then
+  printf 'missing expected remote provisioner download docs\n' >&2
+  exit 1
+fi
 
 for needle in \
   "INCUS_WEB_PROVISIONER_TOKEN is required" \
@@ -226,7 +291,8 @@ for needle in \
   "INCUS_WEB_PROVISIONER_MAX_INCUS_COMMANDS" \
   "INCUS_WEB_PROVISIONER_MAX_OUTPUT_BYTES" \
   "workspace tuple did not match host provisioner metadata" \
-  "chmod(socketPath, 0o600)" \
+  "INCUS_WEB_PROVISIONER_SOCKET_MODE" \
+  "chmod(socketPath, socketMode)" \
   "GetWorkspaceStatus" \
   "failed to read workspace status from Incus"; do
   if ! grep -Fq -- "$needle" "$root/scripts/provisioner-server.mjs"; then
@@ -234,6 +300,15 @@ for needle in \
     exit 1
   fi
 done
+
+if ! grep -Fq -- "scripts/provisioner-server.mjs" "$workflow"; then
+  printf 'missing expected provisioner server workflow trigger\n' >&2
+  exit 1
+fi
+if ! grep -Fq -- "node --check scripts/provisioner-server.mjs" "$workflow"; then
+  printf 'missing expected provisioner server workflow validation\n' >&2
+  exit 1
+fi
 
 if [[ ! -f "$lib" ]]; then
   printf 'missing shared provisioning library: %s\n' "$lib" >&2

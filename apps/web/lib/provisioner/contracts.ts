@@ -235,7 +235,10 @@ export function validateGeneratedName(
 }
 
 export function validateIncusProjectName(value: string): boolean {
-  return value === "default" || validateGeneratedName(value, "user");
+  if (value === "default" || validateGeneratedName(value, "user")) {
+    return true;
+  }
+  return /^[A-Za-z0-9](?:[A-Za-z0-9_.:-]{0,61}[A-Za-z0-9])?$/.test(value);
 }
 
 export function validateIncusContainerName(value: string): boolean {
