@@ -42,6 +42,8 @@ The first host-local implementation is split across:
 - `apps/web/lib/provisioner/host-transport.ts` for the Next.js-side Unix-socket/localhost transport client.
 - `scripts/provisioner-server.mjs` for the host-side provisioner service entrypoint.
 
+`deploy.sh` installs the host-side entrypoint as `incus-web-provisioner.service`, runs it as a dedicated `incus-web-provisioner` system user, writes the service env to `/etc/incus-web/provisioner.env`, and uses `/run/incus-web/provisioner.sock` with group access by default. Only the trusted host web-app service user should be added to the provisioner access group.
+
 host-local is the default provisioner mode, but it only becomes active when `INCUS_WEB_PROVISIONER_TOKEN` is configured. Without that token, inventory fails closed with `unauthenticated_service`. `prototype-static` remains a development-only escape hatch and must not be enabled in production.
 
 ## Authentication

@@ -101,8 +101,27 @@ describe("provisioner contract validators", () => {
     ).toBe(true);
   });
 
+  it("accepts configured Incus project names from active host projects", () => {
+    expect(
+      validateProvisionerCommand({
+        ...baseCommand,
+        workspace: {
+          ...baseCommand.workspace,
+          incusProject: "lab.project-1",
+        },
+      }).ok,
+    ).toBe(true);
+  });
+
   it("rejects malformed workspace refs", () => {
-    const result = validateProvisionerCommand({
+    const projectResult = validateProvisionerCommand({
+      ...baseCommand,
+      workspace: {
+        ...baseCommand.workspace,
+        incusProject: "../escape",
+      },
+    });
+    const containerResult = validateProvisionerCommand({
       ...baseCommand,
       workspace: {
         ...baseCommand.workspace,
@@ -110,7 +129,11 @@ describe("provisioner contract validators", () => {
       },
     });
 
-    expect(result).toMatchObject({
+    expect(projectResult).toMatchObject({
+      ok: false,
+      error: { code: "invalid_input" },
+    });
+    expect(containerResult).toMatchObject({
       ok: false,
       error: { code: "invalid_input" },
     });

@@ -66,6 +66,23 @@ incus_cmd() {
   fi
 }
 
+active_incus_project() {
+  local current=""
+
+  if [[ -n "${INCUS_PROJECT:-}" ]]; then
+    printf '%s\n' "$INCUS_PROJECT"
+    return
+  fi
+
+  current="$(incus_cmd project get-current 2>/dev/null || true)"
+  if [[ -n "$current" ]]; then
+    printf '%s\n' "$current"
+    return
+  fi
+
+  printf 'default\n'
+}
+
 ensure_incus_ready() {
   if incus version >/dev/null 2>&1; then
     return
@@ -423,6 +440,189 @@ push_open_script() {
   incus_cmd file push "$source_file" "$name/usr/local/bin/incus-web-open"
   incus_cmd exec "$name" -- chmod 755 /usr/local/bin/incus-web-open
   [[ -z "$tmp_file" ]] || rm -f "$tmp_file"
+}
+
+ensure_host_node() {
+  if [[ -x "$INCUS_WEB_PROVISIONER_NODE" ]]; then
+    return
+  fi
+
+  have apt-get || die "$INCUS_WEB_PROVISIONER_NODE is required for the host provisioner and this script only knows how to install it with apt-get"
+  have sudo || [[ "$(id -u)" -eq 0 ]] || die "sudo is required to install node for the host provisioner"
+
+  log "installing host node runtime for provisioner"
+  sudo_cmd apt-get update
+  sudo_cmd apt-get install -y nodejs
+  [[ -x "$INCUS_WEB_PROVISIONER_NODE" ]] || die "nodejs installed but $INCUS_WEB_PROVISIONER_NODE is not executable"
+}
+
+install_host_provisioner_server() {
+  local source_file="$INCUS_WEB_PROVISIONER_SERVER"
+  local tmp_file=""
+  local install_dir
+
+  if [[ ! -f "$source_file" ]]; then
+    [[ "$ENABLE_HOST_PROVISIONER_REMOTE_DOWNLOAD" == "1" ]] || die "host provisioner server is missing locally; set ENABLE_HOST_PROVISIONER_REMOTE_DOWNLOAD=1 to fetch it from INCUS_WEB_PROVISIONER_SERVER_URL"
+    [[ "$INCUS_WEB_PROVISIONER_SERVER_URL" == https://* ]] || die "INCUS_WEB_PROVISIONER_SERVER_URL must use https://"
+    tmp_file="$(mktemp)"
+    curl --proto '=https' --tlsv1.2 -fsSL "$INCUS_WEB_PROVISIONER_SERVER_URL" -o "$tmp_file"
+    source_file="$tmp_file"
+  fi
+
+  install_dir="$(dirname "$INCUS_WEB_PROVISIONER_INSTALL_PATH")"
+  sudo_cmd install -d -m 755 "$install_dir"
+  sudo_cmd install -m 755 "$source_file" "$INCUS_WEB_PROVISIONER_INSTALL_PATH"
+  [[ -z "$tmp_file" ]] || rm -f "$tmp_file"
+}
+
+ensure_host_provisioner_identity() {
+  getent group "$INCUS_WEB_PROVISIONER_GROUP" >/dev/null 2>&1 || sudo_cmd groupadd --system "$INCUS_WEB_PROVISIONER_GROUP"
+  getent group "$INCUS_WEB_PROVISIONER_INCUS_GROUP" >/dev/null 2>&1 || die "Incus access group does not exist: $INCUS_WEB_PROVISIONER_INCUS_GROUP"
+
+  if ! id -u "$INCUS_WEB_PROVISIONER_USER" >/dev/null 2>&1; then
+    sudo_cmd useradd --system \
+      --home-dir /var/lib/incus-web-provisioner \
+      --create-home \
+      --shell /usr/sbin/nologin \
+      --gid "$INCUS_WEB_PROVISIONER_GROUP" \
+      --groups "$INCUS_WEB_PROVISIONER_INCUS_GROUP" \
+      "$INCUS_WEB_PROVISIONER_USER"
+  else
+    sudo_cmd usermod -aG "$INCUS_WEB_PROVISIONER_GROUP,$INCUS_WEB_PROVISIONER_INCUS_GROUP" "$INCUS_WEB_PROVISIONER_USER"
+  fi
+}
+
+ensure_host_provisioner_token() {
+  local token_file="$INCUS_WEB_PROVISIONER_TOKEN_FILE"
+  local token_dir
+  local tmp_file
+
+  if [[ -n "${INCUS_WEB_PROVISIONER_TOKEN:-}" ]]; then
+    validate_systemd_env_value INCUS_WEB_PROVISIONER_TOKEN "$INCUS_WEB_PROVISIONER_TOKEN"
+    return
+  fi
+
+  token_dir="$(dirname "$token_file")"
+  sudo_cmd install -d -m 750 -g "$INCUS_WEB_PROVISIONER_GROUP" "$token_dir"
+  if sudo_cmd test -s "$token_file"; then
+    INCUS_WEB_PROVISIONER_TOKEN="$(sudo_cmd cat "$token_file")"
+    export INCUS_WEB_PROVISIONER_TOKEN
+    sudo_cmd chgrp "$INCUS_WEB_PROVISIONER_GROUP" "$token_file"
+    sudo_cmd chmod 640 "$token_file"
+    return
+  fi
+
+  INCUS_WEB_PROVISIONER_TOKEN="$(head -c 48 /dev/urandom | base64 | tr '+/' '-_' | tr -d '=\n')"
+  validate_systemd_env_value INCUS_WEB_PROVISIONER_TOKEN "$INCUS_WEB_PROVISIONER_TOKEN"
+  export INCUS_WEB_PROVISIONER_TOKEN
+  tmp_file="$(mktemp)"
+  chmod 600 "$tmp_file"
+  printf '%s\n' "$INCUS_WEB_PROVISIONER_TOKEN" >"$tmp_file"
+  sudo_cmd install -m 640 -g "$INCUS_WEB_PROVISIONER_GROUP" "$tmp_file" "$token_file"
+  rm -f "$tmp_file"
+}
+
+validate_systemd_env_value() {
+  local name="$1"
+  local value="$2"
+
+  [[ -n "$value" ]] || die "$name must not be empty"
+  [[ "$value" != *$'\n'* && "$value" != *$'\r'* ]] || die "$name must not contain newlines"
+  [[ "$value" =~ ^[A-Za-z0-9_@%+=:,./-]+$ ]] || die "$name contains unsupported characters for systemd EnvironmentFile"
+}
+
+ensure_host_provisioner_systemd() {
+  have systemctl || die "systemctl is required for ENABLE_HOST_PROVISIONER=1; set ENABLE_HOST_PROVISIONER=0 to skip the host provisioner service"
+  [[ -d /run/systemd/system ]] || die "systemd is not running; set ENABLE_HOST_PROVISIONER=0 to skip the host provisioner service"
+}
+
+write_host_provisioner_env() {
+  local name="$1"
+  local tmp_file
+
+  validate_systemd_env_value INCUS_WEB_PROVISIONER_TOKEN "$INCUS_WEB_PROVISIONER_TOKEN"
+  validate_systemd_env_value INCUS_WEB_PROVISIONER_SOCKET "$INCUS_WEB_PROVISIONER_SOCKET"
+  validate_systemd_env_value INCUS_WEB_PROVISIONER_SOCKET_MODE "$INCUS_WEB_PROVISIONER_SOCKET_MODE"
+  validate_systemd_env_value INCUS_WEB_WORKSPACE_ID "$INCUS_WEB_WORKSPACE_ID"
+  validate_systemd_env_value INCUS_WEB_INCUS_PROJECT "$INCUS_WEB_INCUS_PROJECT"
+  validate_systemd_env_value INCUS_WEB_INCUS_CONTAINER "$INCUS_WEB_INCUS_CONTAINER"
+  validate_systemd_env_value CONTAINER_NAME "$name"
+
+  tmp_file="$(mktemp)"
+  chmod 600 "$tmp_file"
+  {
+    printf 'INCUS_WEB_PROVISIONER_TOKEN=%s\n' "$INCUS_WEB_PROVISIONER_TOKEN"
+    printf 'INCUS_WEB_PROVISIONER_SOCKET=%s\n' "$INCUS_WEB_PROVISIONER_SOCKET"
+    printf 'INCUS_WEB_PROVISIONER_SOCKET_MODE=%s\n' "$INCUS_WEB_PROVISIONER_SOCKET_MODE"
+    printf 'INCUS_WEB_WORKSPACE_ID=%s\n' "$INCUS_WEB_WORKSPACE_ID"
+    printf 'INCUS_WEB_INCUS_PROJECT=%s\n' "$INCUS_WEB_INCUS_PROJECT"
+    printf 'INCUS_WEB_INCUS_CONTAINER=%s\n' "$INCUS_WEB_INCUS_CONTAINER"
+    printf 'CONTAINER_NAME=%s\n' "$name"
+  } >"$tmp_file"
+
+  sudo_cmd install -d -m 750 -g "$INCUS_WEB_PROVISIONER_GROUP" "$(dirname "$INCUS_WEB_PROVISIONER_ENV_FILE")"
+  sudo_cmd install -m 640 -g "$INCUS_WEB_PROVISIONER_GROUP" "$tmp_file" "$INCUS_WEB_PROVISIONER_ENV_FILE"
+  rm -f "$tmp_file"
+}
+
+configure_host_provisioner() {
+  local name="$1"
+  local tmp_unit
+
+  if [[ "$ENABLE_HOST_PROVISIONER" != "1" ]]; then
+    if have systemctl; then
+      sudo_cmd systemctl disable --now incus-web-provisioner >/dev/null 2>&1 || true
+    fi
+    return
+  fi
+
+  ensure_host_provisioner_systemd
+  INCUS_WEB_INCUS_CONTAINER="${INCUS_WEB_INCUS_CONTAINER:-$name}"
+
+  ensure_host_node
+  ensure_host_provisioner_identity
+  install_host_provisioner_server
+  ensure_host_provisioner_token
+  write_host_provisioner_env "$name"
+
+  tmp_unit="$(mktemp)"
+  cat >"$tmp_unit" <<EOF
+[Unit]
+Description=incus-web host provisioner
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=$INCUS_WEB_PROVISIONER_USER
+Group=$INCUS_WEB_PROVISIONER_GROUP
+SupplementaryGroups=$INCUS_WEB_PROVISIONER_INCUS_GROUP
+Environment=HOME=/var/lib/incus-web-provisioner
+EnvironmentFile=$INCUS_WEB_PROVISIONER_ENV_FILE
+RuntimeDirectory=incus-web
+RuntimeDirectoryMode=0750
+UMask=0077
+ExecStart=$INCUS_WEB_PROVISIONER_NODE $INCUS_WEB_PROVISIONER_INSTALL_PATH
+Restart=always
+RestartSec=2
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+ReadWritePaths=/run/incus-web
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  sudo_cmd install -m 644 "$tmp_unit" /etc/systemd/system/incus-web-provisioner.service
+  rm -f "$tmp_unit"
+  sudo_cmd systemctl daemon-reload
+  sudo_cmd systemctl enable incus-web-provisioner
+  sudo_cmd systemctl restart incus-web-provisioner
+  log "host provisioner: incus-web-provisioner via $INCUS_WEB_PROVISIONER_SOCKET"
 }
 
 provision_container() {

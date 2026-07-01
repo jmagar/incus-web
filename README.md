@@ -16,6 +16,7 @@ The deploy script is meant to be curlable, but it does not bake secrets into the
 - A dedicated Incus bridge with an ACL that blocks direct egress to RFC1918 and IPv4 link-local LAN ranges.
 - A committed Incus profile YAML (`incus-web-profile.yaml`) as the source of truth for the container shape, including `security.privileged=false` and `security.nesting=true`.
 - A host directory mounted into the container for persistent working files.
+- A host-local `incus-web-provisioner.service` systemd unit that exposes the provisioner contract over a root-owned Unix socket for the Next.js control plane.
 
 ## Requirements
 
@@ -79,6 +80,8 @@ npm --prefix apps/web run build
 
 This first slice is read-only. It reads authenticated identity from reverse-proxy/OIDC headers when present, falls back to a local development actor, and renders the current `incus-web` workspace inventory without mutating Incus state.
 
+`deploy.sh` installs the host provisioner service by default. It creates a dedicated `incus-web-provisioner` system user, grants that user Incus access through `incus-admin`, writes a group-readable environment file at `/etc/incus-web/provisioner.env`, generates or reuses `/etc/incus-web/provisioner.token` when `INCUS_WEB_PROVISIONER_TOKEN` is blank, and listens on `/run/incus-web/provisioner.sock` with mode `0660`. The Next.js app must receive the same `INCUS_WEB_PROVISIONER_TOKEN`, `INCUS_WEB_PROVISIONER_SOCKET`, and workspace tuple env values when it runs on the host. Add only the trusted web-app service user to the `incus-web` group so it can read the env/token and connect to the socket.
+
 ## Quick Start
 
 Create a working directory and a `.env` file:
@@ -100,6 +103,8 @@ curl -fsSL https://raw.githubusercontent.com/jmagar/incus-web/main/deploy.sh | b
 
 The script loads `.env` from the current directory.
 
+When running from a full local checkout, `deploy.sh` installs the host provisioner from `./scripts/provisioner-server.mjs`. When curl-piping `deploy.sh`, set `ENABLE_HOST_PROVISIONER_REMOTE_DOWNLOAD=1` only if you intentionally want deploy to fetch that host service entrypoint from `INCUS_WEB_PROVISIONER_SERVER_URL`; otherwise set `ENABLE_HOST_PROVISIONER=0`.
+
 Rerunning `deploy.sh` is safe after a partial or successful run. By default it reuses the existing container and reruns provisioning, Tailscale Serve setup, and validation. Set `RECREATE=1` in `.env`, or run with `FORCE_RECREATE=1`, to delete and rebuild the container.
 
 ## Configuration
@@ -119,6 +124,18 @@ ENABLE_NETWORK_ACL=1
 INCUS_PROFILE_NAME=incus-web-agent
 INCUS_PROFILE_YAML=
 CONTAINER_IPV4=
+INCUS_WEB_WORKSPACE_ID=workspace-incus-web
+INCUS_WEB_INCUS_PROJECT=default
+INCUS_WEB_INCUS_CONTAINER=
+ENABLE_HOST_PROVISIONER=1
+INCUS_WEB_PROVISIONER_TOKEN=
+INCUS_WEB_PROVISIONER_SOCKET=/run/incus-web/provisioner.sock
+INCUS_WEB_PROVISIONER_SOCKET_MODE=0660
+INCUS_WEB_PROVISIONER_USER=incus-web-provisioner
+INCUS_WEB_PROVISIONER_GROUP=incus-web
+INCUS_WEB_PROVISIONER_INCUS_GROUP=incus-admin
+INCUS_WEB_PROVISIONER_NODE=/usr/bin/node
+ENABLE_HOST_PROVISIONER_REMOTE_DOWNLOAD=0
 TS_HOSTNAME=incus-web
 TS_EXTRA_ARGS=--accept-routes=false
 TAILSCALE_SERVE_PORT=443
@@ -175,6 +192,14 @@ Important variables:
 - `INCUS_PROFILE_NAME`: Incus profile name created/updated from `incus-web-profile.yaml`.
 - `INCUS_PROFILE_YAML`: optional path to a local profile YAML. When unset, `deploy.sh` uses the repo file next to the script or downloads it for curl-piped runs.
 - `CONTAINER_IPV4`: optional static IPv4 to assign if DHCP does not come up.
+- `INCUS_WEB_WORKSPACE_ID`, `INCUS_WEB_INCUS_PROJECT`, and `INCUS_WEB_INCUS_CONTAINER`: workspace tuple shared by the web app and host provisioner. The imported prototype defaults are `workspace-incus-web`, the active Incus project, and `CONTAINER_NAME`; set `INCUS_WEB_INCUS_PROJECT` or `INCUS_WEB_INCUS_CONTAINER` explicitly only when the web app should target a different project/container.
+- `ENABLE_HOST_PROVISIONER`: set to `0` to disable the host-local provisioner systemd unit.
+- `INCUS_WEB_PROVISIONER_TOKEN`: service token shared between the Next.js app and host provisioner. Leave blank during deploy to generate and persist a token readable only by root and `INCUS_WEB_PROVISIONER_GROUP`.
+- `INCUS_WEB_PROVISIONER_SOCKET`: Unix socket path used by the host-local transport.
+- `INCUS_WEB_PROVISIONER_SOCKET_MODE`: socket mode used by the host provisioner server. Defaults to `0660`.
+- `INCUS_WEB_PROVISIONER_USER`, `INCUS_WEB_PROVISIONER_GROUP`, and `INCUS_WEB_PROVISIONER_INCUS_GROUP`: host service identity. Add the trusted web-app service user to `INCUS_WEB_PROVISIONER_GROUP`, not to `incus-admin`.
+- `INCUS_WEB_PROVISIONER_NODE`: absolute Node.js executable used by the systemd unit.
+- `ENABLE_HOST_PROVISIONER_REMOTE_DOWNLOAD`: set to `1` only when curl-piping deploy and intentionally fetching `scripts/provisioner-server.mjs` from `INCUS_WEB_PROVISIONER_SERVER_URL`.
 - `TS_HOSTNAME`: tailnet hostname assigned to the container.
 - `TS_EXTRA_ARGS`: extra flags passed to `tailscale up`; defaults to `--accept-routes=false`.
 - `TAILSCALE_SERVE_PORT`: HTTPS port exposed by `tailscale serve`.

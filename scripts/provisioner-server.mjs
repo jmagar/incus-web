@@ -7,6 +7,9 @@ import { createConnection } from "node:net";
 const token = (process.env.INCUS_WEB_PROVISIONER_TOKEN || "").trim();
 const socketPath =
   process.env.INCUS_WEB_PROVISIONER_SOCKET || "/run/incus-web/provisioner.sock";
+const socketMode = parseMode(
+  process.env.INCUS_WEB_PROVISIONER_SOCKET_MODE || "0660",
+);
 const host = process.env.INCUS_WEB_PROVISIONER_HOST || "";
 const port = Number.parseInt(process.env.INCUS_WEB_PROVISIONER_PORT || "0", 10);
 const workspaceId =
@@ -51,6 +54,14 @@ const setupPhases = new Set([
 if (!token) {
   console.error("INCUS_WEB_PROVISIONER_TOKEN is required");
   process.exit(1);
+}
+
+function parseMode(value) {
+  if (!/^[0-7]{3,4}$/.test(value)) {
+    console.error("INCUS_WEB_PROVISIONER_SOCKET_MODE must be an octal mode");
+    process.exit(1);
+  }
+  return Number.parseInt(value, 8);
 }
 
 function send(res, status, body) {
@@ -469,7 +480,7 @@ if (host && port > 0) {
   });
   await unlinkExistingSocket(socketPath);
   server.listen(socketPath, async () => {
-    await chmod(socketPath, 0o600);
+    await chmod(socketPath, socketMode);
     console.log(`incus-web provisioner listening on ${socketPath}`);
   });
 }

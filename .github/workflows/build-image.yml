@@ -12,6 +12,7 @@ on:
       - incus-web-profile.yaml
       - scripts/build-image.sh
       - scripts/incus-web-lib.sh
+      - scripts/provisioner-server.mjs
       - scripts/smoke-image.sh
       - tests/deploy_static_tests.sh
       - docs/contracts/**
@@ -25,6 +26,7 @@ on:
       - incus-web-profile.yaml
       - scripts/build-image.sh
       - scripts/incus-web-lib.sh
+      - scripts/provisioner-server.mjs
       - scripts/smoke-image.sh
       - tests/deploy_static_tests.sh
       - docs/contracts/**
@@ -80,6 +82,7 @@ jobs:
         run: |
           bash tests/deploy_static_tests.sh
           bash -n deploy.sh scripts/incus-web-lib.sh scripts/build-image.sh scripts/smoke-image.sh tests/deploy_static_tests.sh
+          node --check scripts/provisioner-server.mjs
           shellcheck deploy.sh scripts/incus-web-lib.sh scripts/build-image.sh scripts/smoke-image.sh tests/deploy_static_tests.sh
 
       - name: Install Incus
