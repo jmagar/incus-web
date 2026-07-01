@@ -293,6 +293,8 @@ for needle in \
   "workspace tuple did not match host provisioner metadata" \
   "withIncusProject(path)" \
   "project=\${encodeURIComponent(incusProject)}" \
+  "mapIncusState(state.status, state.status_code)" \
+  "case 103:" \
   "INCUS_WEB_PROVISIONER_SOCKET_MODE" \
   "chmod(socketPath, socketMode)" \
   "GetWorkspaceStatus" \

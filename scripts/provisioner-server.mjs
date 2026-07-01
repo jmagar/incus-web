@@ -311,7 +311,7 @@ async function getWorkspaceStatus(command, options) {
 
   return {
     workspaceId: command.workspace.id,
-    state: mapIncusState(state.status_code),
+    state: mapIncusState(state.status, state.status_code),
     incusProject: command.workspace.incusProject,
     incusContainer: command.workspace.incusContainer,
     cpuCount: parseCpuLimit(cpuLimit),
@@ -353,9 +353,19 @@ async function optionalText(args, options) {
   }
 }
 
-function mapIncusState(statusCode) {
+function mapIncusState(status, statusCode) {
+  if (typeof status === "string") {
+    switch (status.toLowerCase()) {
+      case "running":
+        return "running";
+      case "stopped":
+        return "stopped";
+      default:
+        return "degraded";
+    }
+  }
   switch (statusCode) {
-    case 101:
+    case 103:
       return "running";
     case 102:
       return "stopped";
