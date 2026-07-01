@@ -11,14 +11,31 @@ describe("provisioner status adapter", () => {
     delete process.env.INCUS_WEB_PROTOTYPE_CPU;
     delete process.env.INCUS_WEB_PROTOTYPE_MEMORY_BYTES;
     delete process.env.INCUS_WEB_PROTOTYPE_DISK_BYTES;
+    delete process.env.INCUS_WEB_WORKSPACE_ID;
+    delete process.env.INCUS_WEB_INCUS_PROJECT;
+    delete process.env.INCUS_WEB_INCUS_CONTAINER;
+    delete process.env.CONTAINER_NAME;
   });
 
-  it("builds generated prototype workspace refs", () => {
+  it("builds imported prototype workspace refs by default", () => {
     expect(buildPrototypeWorkspaceRef("oidc:owner@example.com")).toMatchObject({
       id: "workspace-incus-web",
       ownerUserId: "oidc:owner@example.com",
-      incusProject: "user-incus-web",
-      incusContainer: "ws-incus-web",
+      incusProject: "default",
+      incusContainer: "incus-web",
+    });
+  });
+
+  it("builds generated workspace refs from configured metadata", () => {
+    process.env.INCUS_WEB_WORKSPACE_ID = "workspace-custom";
+    process.env.INCUS_WEB_INCUS_PROJECT = "user-custom";
+    process.env.INCUS_WEB_INCUS_CONTAINER = "ws-custom";
+
+    expect(buildPrototypeWorkspaceRef("oidc:owner@example.com")).toMatchObject({
+      id: "workspace-custom",
+      ownerUserId: "oidc:owner@example.com",
+      incusProject: "user-custom",
+      incusContainer: "ws-custom",
     });
   });
 
@@ -34,8 +51,8 @@ describe("provisioner status adapter", () => {
     expect(status).toMatchObject({
       workspaceId: "workspace-incus-web",
       state: "running",
-      incusProject: "user-incus-web",
-      incusContainer: "ws-incus-web",
+      incusProject: "default",
+      incusContainer: "incus-web",
       cpuCount: 2,
       memoryLimitBytes: 4 * 1024 * 1024 * 1024,
     });

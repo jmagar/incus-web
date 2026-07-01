@@ -632,6 +632,14 @@ Audit metadata must not include raw age keys, OAuth tokens, Incus client certifi
 
 The provisioner may use the Incus REST API over the local Unix socket first. Remote TLS support can be added later without changing the control-plane contract.
 
+The current host-local implementation exposes this through the provisioner boundary:
+
+- Next.js uses `apps/web/lib/provisioner/host-transport.ts`.
+- The host runs `scripts/provisioner-server.mjs` on `/run/incus-web/provisioner.sock` by default.
+- `GetWorkspaceStatus` is the first implemented command.
+- The existing prototype imports as workspace `workspace-incus-web`, Incus project `default`, and container `incus-web`.
+- Mutating commands remain contract-shaped failures until workspace creation, lifecycle, quota, and setup operations have their own acceptance tests.
+
 Adapter responsibilities:
 
 - discover Incus API extensions required by the current template/workspace flow
@@ -652,11 +660,12 @@ Adapter constraints:
 - verify workspace metadata before mutating an Incus instance
 - use deterministic generated names
 - keep raw Incus error detail server-side
+- keep the provisioner endpoint host-local and authenticate it with a service token
 
 ## Security Requirements
 
 - Next.js request handlers must not hold broad Incus credentials.
-- Provisioner transport is local Unix socket for v1.
+- Provisioner transport is host-local for v1: Unix socket preferred, loopback HTTP allowed only as a configured fallback.
 - Provisioner API is not exposed publicly.
 - Workspace sharing is high trust and must show explicit warning copy.
 - Same live container means same Linux user, shared shell history, shared decrypted workspace state, shared running processes.

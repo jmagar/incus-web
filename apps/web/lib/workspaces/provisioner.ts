@@ -13,6 +13,10 @@ import {
   type ProvisionerClient,
 } from "@/lib/provisioner/client";
 import {
+  createHostProvisionerClient,
+  hostProvisionerConfigFromEnv,
+} from "@/lib/provisioner/host-transport";
+import {
   buildPrototypeWorkspaceRef,
   prototypeRuntimeStatus,
   statusToWorkspace,
@@ -52,8 +56,18 @@ function actorMatchesOwner(actor: ActorContext, owner: ConfiguredOwner) {
 }
 
 function defaultProvisionerClient(ownerUserId: string): ProvisionerClient {
-  const workspace = buildPrototypeWorkspaceRef(ownerUserId);
-  if (process.env.INCUS_WEB_PROVISIONER_MODE === "prototype-static") {
+  let workspace;
+  try {
+    workspace = buildPrototypeWorkspaceRef(ownerUserId);
+  } catch (error) {
+    return failedProvisionerClient(
+      "invalid_input",
+      error instanceof Error ? error.message : "invalid workspace metadata",
+      "unknown",
+    );
+  }
+  const mode = process.env.INCUS_WEB_PROVISIONER_MODE ?? "host-local";
+  if (mode === "prototype-static") {
     if (process.env.NODE_ENV === "production") {
       return failedProvisionerClient(
         "invalid_state",
@@ -70,6 +84,26 @@ function defaultProvisionerClient(ownerUserId: string): ProvisionerClient {
         workspace.id,
       );
     }
+  }
+  if (mode !== "host-local") {
+    return failedProvisionerClient(
+      "invalid_input",
+      `unsupported provisioner mode: ${mode}`,
+      workspace.id,
+    );
+  }
+
+  try {
+    const config = hostProvisionerConfigFromEnv();
+    if (config) {
+      return createHostProvisionerClient(config);
+    }
+  } catch (error) {
+    return failedProvisionerClient(
+      "invalid_input",
+      error instanceof Error ? error.message : "invalid host provisioner config",
+      workspace.id,
+    );
   }
 
   return failedProvisionerClient(
@@ -88,7 +122,16 @@ export async function getWorkspaceInventory(
     return { actor, workspaces: [] };
   }
 
-  const workspace = buildPrototypeWorkspaceRef(owner.userId);
+  let workspace;
+  try {
+    workspace = buildPrototypeWorkspaceRef(owner.userId);
+  } catch (error) {
+    return inventoryFailure(actor, "unknown", actor.requestId, {
+      code: "invalid_input",
+      message: error instanceof Error ? error.message : "invalid workspace metadata",
+      retryable: false,
+    });
+  }
   const provisioner = client ?? defaultProvisionerClient(owner.userId);
   const command: ProvisionerCommand<"GetWorkspaceStatus"> = {
     version: PROVISIONER_CONTRACT_VERSION,

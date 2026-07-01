@@ -12,6 +12,7 @@ smoke_image="$root/scripts/smoke-image.sh"
 workflow="$root/.github/workflows/build-image.yml"
 contract_doc="$root/docs/contracts/provisioner-boundary-v1.md"
 provisioner_plan="$root/docs/superpowers/plans/2026-07-01-provisioner-boundary-v1.md"
+env_example="$root/.env.example"
 
 require_literal() {
   local needle="$1"
@@ -152,6 +153,87 @@ require_literal "if [[ \"\${BASH_SOURCE[0]}\" == \"\$0\" ]]; then"
 require_literal "INCUS_WEB_LIB_URL="
 require_literal "raw.githubusercontent.com/jmagar/incus-web/main/scripts/incus-web-lib.sh"
 require_literal "curl -fsSL \"\$INCUS_WEB_LIB_URL\" -o \"\$INCUS_WEB_LIB_TMP\""
+
+if ! grep -Fq -- "INCUS_WEB_PROVISIONER_TOKEN" "$root/apps/web/lib/provisioner/host-transport.ts"; then
+  printf 'missing expected host transport token config\n' >&2
+  exit 1
+fi
+if ! grep -Fq -- "INCUS_WEB_PROVISIONER_SOCKET" "$root/apps/web/lib/provisioner/host-transport.ts"; then
+  printf 'missing expected host transport socket config\n' >&2
+  exit 1
+fi
+if ! grep -Fq -- "createHostProvisionerClient" "$root/apps/web/lib/provisioner/host-transport.ts"; then
+  printf 'missing expected host transport client factory\n' >&2
+  exit 1
+fi
+if ! grep -Fq -- "host provisioner transport is not configured" "$root/apps/web/lib/workspaces/provisioner.ts"; then
+  printf 'missing expected inventory fail-closed provisioner message\n' >&2
+  exit 1
+fi
+if ! grep -Fq -- "INCUS_WEB_WORKSPACE_ID" "$root/apps/web/lib/provisioner/status-adapter.ts"; then
+  printf 'missing expected configured workspace id metadata\n' >&2
+  exit 1
+fi
+if ! grep -Fq -- "INCUS_WEB_INCUS_PROJECT" "$root/apps/web/lib/provisioner/status-adapter.ts"; then
+  printf 'missing expected configured Incus project metadata\n' >&2
+  exit 1
+fi
+if ! grep -Fq -- "INCUS_WEB_INCUS_CONTAINER" "$root/apps/web/lib/provisioner/status-adapter.ts"; then
+  printf 'missing expected configured Incus container metadata\n' >&2
+  exit 1
+fi
+if ! grep -Fq -- "validateIncusContainerName" "$root/apps/web/lib/provisioner/contracts.ts"; then
+  printf 'missing expected imported prototype container allowance\n' >&2
+  exit 1
+fi
+for needle in \
+  "INCUS_WEB_WORKSPACE_ID=workspace-incus-web" \
+  "INCUS_WEB_INCUS_PROJECT=default" \
+  "INCUS_WEB_INCUS_CONTAINER=incus-web"; do
+  if ! grep -Fq -- "$needle" "$env_example"; then
+    printf 'missing expected imported workspace env example: %s\n' "$needle" >&2
+    exit 1
+  fi
+done
+
+if ! grep -Fq -- "scripts/provisioner-server.mjs" "$contract_doc" "$root/docs/contracts/multi-tenant-control-plane-v1.md"; then
+  printf 'missing expected provisioner server docs\n' >&2
+  exit 1
+fi
+if ! grep -Fq -- "host-local is the default provisioner mode" "$contract_doc"; then
+  printf 'missing expected host-local default docs\n' >&2
+  exit 1
+fi
+if ! grep -Fq -- "Next.js request handlers must continue to call the provisioner contract" "$contract_doc"; then
+  printf 'missing expected Next.js boundary docs\n' >&2
+  exit 1
+fi
+if ! grep -Fq -- "Unix socket preferred, loopback HTTP allowed only as a configured fallback" "$root/docs/contracts/multi-tenant-control-plane-v1.md"; then
+  printf 'missing expected host-local security requirement docs\n' >&2
+  exit 1
+fi
+if ! grep -Fq -- "Incus project \`default\` and container \`incus-web\`" "$contract_doc"; then
+  printf 'missing expected imported prototype tuple docs\n' >&2
+  exit 1
+fi
+
+for needle in \
+  "INCUS_WEB_PROVISIONER_TOKEN is required" \
+  "INCUS_WEB_PROVISIONER_HOST must be loopback-only" \
+  "unlinkExistingSocket(socketPath)" \
+  "socketAcceptsConnections(path)" \
+  "INCUS_WEB_PROVISIONER_STATUS_CACHE_TTL_MS" \
+  "INCUS_WEB_PROVISIONER_MAX_INCUS_COMMANDS" \
+  "INCUS_WEB_PROVISIONER_MAX_OUTPUT_BYTES" \
+  "workspace tuple did not match host provisioner metadata" \
+  "chmod(socketPath, 0o600)" \
+  "GetWorkspaceStatus" \
+  "failed to read workspace status from Incus"; do
+  if ! grep -Fq -- "$needle" "$root/scripts/provisioner-server.mjs"; then
+    printf 'missing expected host provisioner server content: %s\n' "$needle" >&2
+    exit 1
+  fi
+done
 
 if [[ ! -f "$lib" ]]; then
   printf 'missing shared provisioning library: %s\n' "$lib" >&2

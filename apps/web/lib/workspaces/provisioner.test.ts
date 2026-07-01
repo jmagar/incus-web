@@ -102,8 +102,8 @@ describe("workspace inventory provisioner", () => {
     expect(inventory.workspaces).toHaveLength(1);
     expect(inventory.workspaces[0]).toMatchObject({
       name: "incus-web",
-      incusProject: "user-incus-web",
-      incusContainer: "ws-incus-web",
+      incusProject: "default",
+      incusContainer: "incus-web",
       state: "running",
       ownerUserId: "oidc:owner@example.com",
     });
@@ -133,8 +133,8 @@ describe("workspace inventory provisioner", () => {
     const status: WorkspaceRuntimeStatus = {
       workspaceId: "workspace-incus-web",
       state: "running",
-      incusProject: "user-incus-web",
-      incusContainer: "ws-incus-web",
+      incusProject: "default",
+      incusContainer: "incus-web",
       cpuCount: 4,
       memoryLimitBytes: 8 * 1024 * 1024 * 1024,
       rootDiskLimitBytes: 40 * 1024 * 1024 * 1024,
@@ -148,8 +148,8 @@ describe("workspace inventory provisioner", () => {
     );
 
     expect(inventory.workspaces[0]).toMatchObject({
-      incusProject: "user-incus-web",
-      incusContainer: "ws-incus-web",
+      incusProject: "default",
+      incusContainer: "incus-web",
       resources: {
         cpu: "4 vCPU",
         memory: "8 GiB",
@@ -170,8 +170,8 @@ describe("workspace inventory provisioner", () => {
     const status: WorkspaceRuntimeStatus = {
       workspaceId: "workspace-incus-web",
       state: "running",
-      incusProject: "user-incus-web",
-      incusContainer: "ws-incus-web",
+      incusProject: "default",
+      incusContainer: "incus-web",
       lastCheckedAt: "2026-07-01T00:00:00.000Z",
     };
     const client = {
@@ -200,11 +200,48 @@ describe("workspace inventory provisioner", () => {
       workspace: {
         id: "workspace-incus-web",
         ownerUserId: "oidc:owner@example.com",
-        incusProject: "user-incus-web",
-        incusContainer: "ws-incus-web",
+        incusProject: "default",
+        incusContainer: "incus-web",
       },
       payload: {},
     });
+  });
+
+  it("uses configured host workspace metadata in provisioner commands", async () => {
+    useOwnerSubject();
+    vi.stubEnv("INCUS_WEB_WORKSPACE_ID", "workspace-custom");
+    vi.stubEnv("INCUS_WEB_INCUS_PROJECT", "user-custom");
+    vi.stubEnv("INCUS_WEB_INCUS_CONTAINER", "ws-custom");
+    const actor = ownerActor();
+    const client = {
+      send: vi.fn().mockResolvedValue({
+        id: "op-custom",
+        requestId: actor.requestId,
+        type: "GetWorkspaceStatus",
+        workspaceId: "workspace-custom",
+        status: "succeeded",
+        result: {
+          workspaceId: "workspace-custom",
+          state: "running",
+          incusProject: "user-custom",
+          incusContainer: "ws-custom",
+          lastCheckedAt: "2026-07-01T00:00:00.000Z",
+        },
+      }),
+    };
+
+    await getWorkspaceInventory(actor, client);
+
+    expect(client.send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workspace: {
+          id: "workspace-custom",
+          ownerUserId: "oidc:owner-subject",
+          incusProject: "user-custom",
+          incusContainer: "ws-custom",
+        },
+      }),
+    );
   });
 
   it("does not call provisioner for non-owners", async () => {
@@ -337,6 +374,21 @@ describe("workspace inventory provisioner", () => {
       code: "invalid_input",
       message: "INCUS_WEB_PROTOTYPE_CPU must be a positive number",
       workspaceId: "workspace-incus-web",
+    });
+  });
+
+  it("surfaces invalid configured workspace metadata", async () => {
+    useOwnerSubject();
+    vi.stubEnv("INCUS_WEB_INCUS_CONTAINER", "../bad");
+    const actor = ownerActor();
+
+    const inventory = await getWorkspaceInventory(actor);
+
+    expect(inventory.workspaces).toHaveLength(0);
+    expect(inventory.provisionerError).toMatchObject({
+      code: "invalid_input",
+      message: "INCUS_WEB_INCUS_CONTAINER is invalid",
+      workspaceId: "unknown",
     });
   });
 

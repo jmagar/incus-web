@@ -88,6 +88,19 @@ describe("provisioner contract validators", () => {
     expect(validateGeneratedName("User-Abc", "user")).toBe(false);
   });
 
+  it("accepts the imported prototype workspace tuple", () => {
+    expect(
+      validateProvisionerCommand({
+        ...baseCommand,
+        workspace: {
+          ...baseCommand.workspace,
+          incusProject: "default",
+          incusContainer: "incus-web",
+        },
+      }).ok,
+    ).toBe(true);
+  });
+
   it("rejects malformed workspace refs", () => {
     const result = validateProvisionerCommand({
       ...baseCommand,
