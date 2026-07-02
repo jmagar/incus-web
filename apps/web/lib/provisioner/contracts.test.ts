@@ -6,6 +6,9 @@ import {
   redactProvisionerOperation,
   redactSetupExcerpt,
   validateGeneratedName,
+  validateAgentRun,
+  validateDispatchAgentRunPayload,
+  validateListAgentRunsPayload,
   validateProvisionerCommand,
   validateProvisionerOperation,
   validateSetupPayload,
@@ -310,6 +313,87 @@ describe("provisioner contract validators", () => {
     ).toBe(true);
   });
 
+  it("validates agent run dispatch and list payloads", () => {
+    expect(
+      validateDispatchAgentRunPayload({
+        agent: "codex",
+        repoUrl: "https://github.com/jmagar/incus-web.git",
+        ref: "feature/agent-run",
+        task: "Implement the next slice",
+      }).ok,
+    ).toBe(true);
+    expect(
+      validateDispatchAgentRunPayload({
+        agent: "claude",
+        repoUrl: "ssh://git@github.com/jmagar/incus-web.git",
+        task: "Run tests",
+      }).ok,
+    ).toBe(true);
+    expect(
+      validateDispatchAgentRunPayload({
+        agent: "codex",
+        repoUrl: "git@github.com:jmagar/incus-web.git",
+        task: "Run tests",
+      }).ok,
+    ).toBe(true);
+    expect(
+      validateDispatchAgentRunPayload({
+        agent: "codex",
+        repoUrl: "file:///tmp/repo",
+        task: "Run tests",
+      }),
+    ).toMatchObject({ ok: false, error: { code: "invalid_input" } });
+    expect(
+      validateDispatchAgentRunPayload({
+        agent: "codex",
+        repoUrl: "https://github.com/jmagar/incus-web.git",
+        ref: "../main",
+        task: "Run tests",
+      }),
+    ).toMatchObject({ ok: false, error: { code: "invalid_input" } });
+    expect(validateListAgentRunsPayload({ limit: 20 }).ok).toBe(true);
+    expect(validateListAgentRunsPayload({ limit: 101 })).toMatchObject({
+      ok: false,
+      error: { code: "invalid_input" },
+    });
+  });
+
+  it("requires every agent run to own a container from creation", () => {
+    const run = {
+      id: "run_20260702000102_ab12cd34",
+      workspaceId: "workspace-1",
+      ownerUserId: "user-1",
+      container: {
+        name: "agent-run-ab12cd34",
+        project: "user-abc123",
+        sourceContainer: "incus-web-agent-golden",
+        sourceProject: "default",
+        createdFrom: "golden",
+        state: "planned",
+      },
+      agent: "codex",
+      repoUrl: "git@github.com:jmagar/incus-web.git",
+      task: "Run tests",
+      phase: "failed",
+      status: "failed",
+      createdAt: "2026-07-02T00:01:02.000Z",
+      updatedAt: "2026-07-02T00:01:03.000Z",
+      completedAt: "2026-07-02T00:01:03.000Z",
+      controller: {
+        kind: "codex-app-server",
+        sessionId: "thr_123",
+        turnId: "turn_456",
+        url: "ws://127.0.0.1:4500",
+      },
+      error: "Codex app-server controller is not configured for this host.",
+    };
+
+    expect(validateAgentRun(run, baseCommand.workspace).ok).toBe(true);
+    expect(
+      validateAgentRun({ ...run, container: undefined }, baseCommand.workspace),
+    ).toMatchObject({ ok: false, error: { code: "invalid_input" } });
+  });
+
   it("rejects age key persistence unless policy enables it", () => {
     const payload: RunSetupPayload = {
       ageKey: {
@@ -475,6 +559,41 @@ describe("provisioner contract validators", () => {
         },
         baseCommand.workspace,
         "RunSetup",
+      ).ok,
+    ).toBe(true);
+    expect(
+      validateProvisionerOperation(
+        {
+          id: "op-1",
+          requestId: "req-123",
+          type: "DispatchAgentRun",
+          workspaceId: "workspace-1",
+          status: "succeeded",
+          result: {
+            run: {
+              id: "run_20260702000102_ab12cd34",
+              workspaceId: "workspace-1",
+              ownerUserId: "user-1",
+              container: {
+                name: "agent-run-ab12cd34",
+                project: "user-abc123",
+                sourceContainer: "incus-web-agent-golden",
+                sourceProject: "default",
+                createdFrom: "golden",
+                state: "planned",
+              },
+              agent: "codex",
+              repoUrl: "https://github.com/jmagar/incus-web.git",
+              task: "Run tests",
+              phase: "queued",
+              status: "queued",
+              createdAt: "2026-07-02T00:01:02.000Z",
+              updatedAt: "2026-07-02T00:01:02.000Z",
+            },
+          },
+        },
+        baseCommand.workspace,
+        "DispatchAgentRun",
       ).ok,
     ).toBe(true);
   });

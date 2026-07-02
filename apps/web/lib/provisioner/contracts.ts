@@ -7,6 +7,8 @@ export const PROVISIONER_COMMAND_TYPES = [
   "RestartWorkspace",
   "GetWorkspaceStatus",
   "RunSetup",
+  "DispatchAgentRun",
+  "ListAgentRuns",
 ] as const;
 
 const PROVISIONER_WORKSPACE_STATES = [
@@ -32,6 +34,28 @@ const PROVISIONER_SETUP_PHASES = [
 ] as const;
 
 const OPERATION_STATUSES = ["queued", "running", "succeeded", "failed"] as const;
+const AGENT_RUN_AGENTS = ["codex", "claude"] as const;
+const AGENT_RUN_CONTAINER_STATES = [
+  "planned",
+  "cloning",
+  "stopped",
+  "starting",
+  "running",
+  "failed",
+  "deleted",
+] as const;
+const AGENT_RUN_PHASES = [
+  "queued",
+  "cloning_container",
+  "starting_container",
+  "cloning_repo",
+  "attaching_agent",
+  "running",
+  "succeeded",
+  "failed",
+] as const;
+const AGENT_RUN_STATUSES = ["queued", "running", "succeeded", "failed"] as const;
+const AGENT_CONTROLLER_KINDS = ["codex-app-server", "claude-cli"] as const;
 
 export type ProvisionerContractVersion = typeof PROVISIONER_CONTRACT_VERSION;
 export type ProvisionerCommandType = (typeof PROVISIONER_COMMAND_TYPES)[number];
@@ -43,6 +67,12 @@ export type OperationId = string;
 export type IncusProjectName = string;
 export type IncusContainerName = string;
 export type ResourceProfileId = "local-dev";
+export type AgentRunAgent = (typeof AGENT_RUN_AGENTS)[number];
+export type AgentRunContainerState =
+  (typeof AGENT_RUN_CONTAINER_STATES)[number];
+export type AgentRunPhase = (typeof AGENT_RUN_PHASES)[number];
+export type AgentRunStatus = (typeof AGENT_RUN_STATUSES)[number];
+export type AgentControllerKind = (typeof AGENT_CONTROLLER_KINDS)[number];
 
 export type ProvisionerErrorCode =
   | "invalid_input"
@@ -54,6 +84,8 @@ export type ProvisionerErrorCode =
   | "zfs_unavailable"
   | "quota_failed"
   | "setup_failed"
+  | "missing_controller_config"
+  | "not_implemented"
   | "timeout"
   | "operation_failed";
 
@@ -131,6 +163,60 @@ export type RunSetupPayload = {
   skipAptScripts: boolean;
 };
 
+export type AgentRunContainer = {
+  name: string;
+  project: string;
+  sourceContainer: string;
+  sourceProject: string;
+  createdFrom: "golden";
+  state: AgentRunContainerState;
+};
+
+export type AgentRunController = {
+  kind: AgentControllerKind;
+  sessionId?: string;
+  turnId?: string;
+  url?: string;
+};
+
+export type AgentRun = {
+  id: string;
+  workspaceId: WorkspaceId;
+  ownerUserId: UserId;
+  container: AgentRunContainer;
+  agent: AgentRunAgent;
+  repoUrl: string;
+  ref?: string;
+  task: string;
+  phase: AgentRunPhase;
+  status: AgentRunStatus;
+  createdAt: string;
+  updatedAt: string;
+  completedAt?: string;
+  controller?: AgentRunController;
+  lastLogExcerpt?: string;
+  error?: string;
+};
+
+export type DispatchAgentRunPayload = {
+  agent: AgentRunAgent;
+  repoUrl: string;
+  ref?: string;
+  task: string;
+};
+
+export type DispatchAgentRunResult = {
+  run: AgentRun;
+};
+
+export type ListAgentRunsPayload = {
+  limit: number;
+};
+
+export type ListAgentRunsResult = {
+  runs: AgentRun[];
+};
+
 export type SetupValidationPolicy = {
   allowAgeKeyPersistence?: boolean;
 };
@@ -173,6 +259,8 @@ export type ProvisionerCommandPayloadMap = {
   RestartWorkspace: RestartWorkspacePayload;
   GetWorkspaceStatus: GetWorkspaceStatusPayload;
   RunSetup: RunSetupPayload;
+  DispatchAgentRun: DispatchAgentRunPayload;
+  ListAgentRuns: ListAgentRunsPayload;
 };
 
 export type ProvisionerCommandResultMap = {
@@ -182,6 +270,8 @@ export type ProvisionerCommandResultMap = {
   RestartWorkspace: LifecycleWorkspaceResult;
   GetWorkspaceStatus: WorkspaceRuntimeStatus;
   RunSetup: RunSetupResult;
+  DispatchAgentRun: DispatchAgentRunResult;
+  ListAgentRuns: ListAgentRunsResult;
 };
 
 export type ProvisionerCommand<
@@ -291,7 +381,7 @@ export function validateSetupPayload(
     (typeof payload.dotfilesRepo !== "string" ||
       payload.dotfilesRepo.length === 0 ||
       payload.dotfilesRepo.length > 512 ||
-      !isAllowedGitRepo(payload.dotfilesRepo))
+      !isAllowedGithubHttpsRepo(payload.dotfilesRepo))
   ) {
     return invalid("dotfilesRepo is invalid");
   }
@@ -317,6 +407,116 @@ export function validateSetupPayload(
     }
   }
   return { ok: true, value: payload as RunSetupPayload };
+}
+
+export function validateDispatchAgentRunPayload(
+  payload: unknown,
+): ValidationResult<DispatchAgentRunPayload> {
+  if (!isRecord(payload)) {
+    return invalid("DispatchAgentRun payload must be an object");
+  }
+  if (!hasOnlyKeys(payload, ["agent", "repoUrl", "ref", "task"])) {
+    return invalid("DispatchAgentRun payload contains unsupported fields");
+  }
+  if (!isAgentRunAgent(payload.agent)) {
+    return invalid("agent must be codex or claude");
+  }
+  if (
+    typeof payload.repoUrl !== "string" ||
+    payload.repoUrl.length > 512 ||
+    !isAllowedAgentRepo(payload.repoUrl)
+  ) {
+    return invalid("repoUrl is invalid");
+  }
+  if (
+    typeof payload.task !== "string" ||
+    payload.task.trim().length === 0 ||
+    payload.task.length > 12000
+  ) {
+    return invalid("task is invalid");
+  }
+  if (
+    payload.ref !== undefined &&
+    (typeof payload.ref !== "string" ||
+      payload.ref.length === 0 ||
+      payload.ref.length > 200 ||
+      !/^[A-Za-z0-9][A-Za-z0-9._/@+-]*$/.test(payload.ref) ||
+      payload.ref.includes("..") ||
+      payload.ref.includes("//") ||
+      payload.ref.endsWith("/"))
+  ) {
+    return invalid("ref is invalid");
+  }
+  return { ok: true, value: payload as DispatchAgentRunPayload };
+}
+
+export function validateListAgentRunsPayload(
+  payload: unknown,
+): ValidationResult<ListAgentRunsPayload> {
+  if (!isRecord(payload)) {
+    return invalid("ListAgentRuns payload must be an object");
+  }
+  if (!hasOnlyKeys(payload, ["limit"])) {
+    return invalid("ListAgentRuns payload contains unsupported fields");
+  }
+  if (
+    typeof payload.limit !== "number" ||
+    !Number.isInteger(payload.limit) ||
+    payload.limit < 1 ||
+    payload.limit > 100
+  ) {
+    return invalid("limit must be an integer from 1 to 100");
+  }
+  return { ok: true, value: payload as ListAgentRunsPayload };
+}
+
+export function validateAgentRun(
+  run: unknown,
+  workspace: ProvisionerWorkspaceRef,
+): ValidationResult<AgentRun> {
+  if (!isRecord(run)) {
+    return invalid("agent run must be an object");
+  }
+  if (run.workspaceId !== workspace.id || run.ownerUserId !== workspace.ownerUserId) {
+    return metadataMismatch("agent run workspace tuple did not match request");
+  }
+  if (typeof run.id !== "string" || !/^run_\d{14}_[a-z0-9]+$/.test(run.id)) {
+    return invalid("agent run id is invalid");
+  }
+  if (!isAgentRunContainer(run.container)) {
+    return invalid("agent run container is invalid");
+  }
+  if (!isAgentRunAgent(run.agent)) {
+    return invalid("agent run agent is invalid");
+  }
+  if (typeof run.repoUrl !== "string" || !isAllowedAgentRepo(run.repoUrl)) {
+    return invalid("agent run repoUrl is invalid");
+  }
+  if (typeof run.task !== "string" || run.task.trim().length === 0) {
+    return invalid("agent run task is invalid");
+  }
+  if (run.ref !== undefined && typeof run.ref !== "string") {
+    return invalid("agent run ref is invalid");
+  }
+  if (!isAgentRunPhase(run.phase) || !isAgentRunStatus(run.status)) {
+    return invalid("agent run status is invalid");
+  }
+  if (!isIsoTimestamp(run.createdAt) || !isIsoTimestamp(run.updatedAt)) {
+    return invalid("agent run timestamps are invalid");
+  }
+  if (run.completedAt !== undefined && !isIsoTimestamp(run.completedAt)) {
+    return invalid("agent run completedAt is invalid");
+  }
+  if (run.controller !== undefined && !isAgentRunController(run.controller)) {
+    return invalid("agent run controller is invalid");
+  }
+  if (run.lastLogExcerpt !== undefined && typeof run.lastLogExcerpt !== "string") {
+    return invalid("agent run lastLogExcerpt is invalid");
+  }
+  if (run.error !== undefined && typeof run.error !== "string") {
+    return invalid("agent run error is invalid");
+  }
+  return { ok: true, value: run as AgentRun };
 }
 
 export function validateWorkspaceRuntimeStatus(
@@ -509,6 +709,10 @@ function validateCommandPayload(
       return validateRestartWorkspacePayload(payload);
     case "RunSetup":
       return validateSetupPayload(payload);
+    case "DispatchAgentRun":
+      return validateDispatchAgentRunPayload(payload);
+    case "ListAgentRuns":
+      return validateListAgentRunsPayload(payload);
   }
 }
 
@@ -594,7 +798,44 @@ function validateOperationResult(
       return validateLifecycleWorkspaceResult(result, workspace, "stopped", false);
     case "RunSetup":
       return validateRunSetupResult(result, workspace);
+    case "DispatchAgentRun":
+      return validateDispatchAgentRunResult(result, workspace);
+    case "ListAgentRuns":
+      return validateListAgentRunsResult(result, workspace);
   }
+}
+
+function validateDispatchAgentRunResult(
+  result: unknown,
+  workspace: ProvisionerWorkspaceRef,
+): ValidationResult<DispatchAgentRunResult> {
+  if (!isRecord(result) || !hasOnlyKeys(result, ["run"])) {
+    return invalid("DispatchAgentRun result must include a run");
+  }
+  const run = validateAgentRun(result.run, workspace);
+  if (!run.ok) {
+    return run;
+  }
+  return { ok: true, value: { run: run.value } };
+}
+
+function validateListAgentRunsResult(
+  result: unknown,
+  workspace: ProvisionerWorkspaceRef,
+): ValidationResult<ListAgentRunsResult> {
+  if (!isRecord(result) || !Array.isArray(result.runs)) {
+    return invalid("ListAgentRuns result must include runs");
+  }
+  if (result.runs.length > 100) {
+    return invalid("ListAgentRuns returned too many runs");
+  }
+  for (const runValue of result.runs) {
+    const run = validateAgentRun(runValue, workspace);
+    if (!run.ok) {
+      return run;
+    }
+  }
+  return { ok: true, value: result as ListAgentRunsResult };
 }
 
 function validateCreateWorkspaceResult(
@@ -692,7 +933,7 @@ function hasOptionalCheckStatus(value: unknown): boolean {
   );
 }
 
-function isAllowedGitRepo(value: string): boolean {
+function isAllowedGithubHttpsRepo(value: string): boolean {
   const match = value.match(
     /^https:\/\/github\.com\/([A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?)\/([A-Za-z0-9_.-]+?)(?:\.git)?$/,
   );
@@ -702,6 +943,21 @@ function isAllowedGitRepo(value: string): boolean {
       /^[A-Za-z0-9_.-]*[A-Za-z0-9]$/.test(match[2]) &&
       !match[2].includes(".."),
   );
+}
+
+function isAllowedAgentRepo(value: string): boolean {
+  if (value.length === 0 || value.length > 512 || /[\s\r\n]/.test(value)) {
+    return false;
+  }
+  if (value.startsWith("https://") || value.startsWith("ssh://")) {
+    try {
+      const url = new URL(value);
+      return Boolean(url.hostname && url.pathname.length > 1);
+    } catch {
+      return false;
+    }
+  }
+  return /^git@[A-Za-z0-9.-]+:[A-Za-z0-9._/-]+(?:\.git)?$/.test(value);
 }
 
 function isAgeIdentity(value: string): boolean {
@@ -723,6 +979,76 @@ function isProvisionerSetupPhase(
   return (
     typeof value === "string" &&
     PROVISIONER_SETUP_PHASES.includes(value as ProvisionerSetupPhase)
+  );
+}
+
+function isAgentRunAgent(value: unknown): value is AgentRunAgent {
+  return (
+    typeof value === "string" &&
+    AGENT_RUN_AGENTS.includes(value as AgentRunAgent)
+  );
+}
+
+function isAgentRunContainerState(
+  value: unknown,
+): value is AgentRunContainerState {
+  return (
+    typeof value === "string" &&
+    AGENT_RUN_CONTAINER_STATES.includes(value as AgentRunContainerState)
+  );
+}
+
+function isAgentRunPhase(value: unknown): value is AgentRunPhase {
+  return (
+    typeof value === "string" &&
+    AGENT_RUN_PHASES.includes(value as AgentRunPhase)
+  );
+}
+
+function isAgentRunStatus(value: unknown): value is AgentRunStatus {
+  return (
+    typeof value === "string" &&
+    AGENT_RUN_STATUSES.includes(value as AgentRunStatus)
+  );
+}
+
+function isAgentRunContainer(value: unknown): value is AgentRunContainer {
+  return (
+    isRecord(value) &&
+    typeof value.name === "string" &&
+    validateAgentRunContainerName(value.name) &&
+    typeof value.project === "string" &&
+    validateIncusProjectName(value.project) &&
+    typeof value.sourceContainer === "string" &&
+    validateIncusInstanceName(value.sourceContainer) &&
+    typeof value.sourceProject === "string" &&
+    validateIncusProjectName(value.sourceProject) &&
+    value.createdFrom === "golden" &&
+    isAgentRunContainerState(value.state)
+  );
+}
+
+function isAgentRunController(value: unknown): value is AgentRunController {
+  return (
+    isRecord(value) &&
+    AGENT_CONTROLLER_KINDS.includes(value.kind as AgentControllerKind) &&
+    (value.sessionId === undefined || typeof value.sessionId === "string") &&
+    (value.turnId === undefined || typeof value.turnId === "string") &&
+    (value.url === undefined || typeof value.url === "string")
+  );
+}
+
+function validateAgentRunContainerName(value: string): boolean {
+  return (
+    value.length <= 63 &&
+    /^agent-run-[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(value)
+  );
+}
+
+function validateIncusInstanceName(value: string): boolean {
+  return (
+    value.length <= 63 &&
+    /^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$/.test(value)
   );
 }
 
@@ -755,6 +1081,8 @@ function isProvisionerErrorCode(value: unknown): value is ProvisionerErrorCode {
     value === "zfs_unavailable" ||
     value === "quota_failed" ||
     value === "setup_failed" ||
+    value === "missing_controller_config" ||
+    value === "not_implemented" ||
     value === "timeout" ||
     value === "operation_failed"
   );

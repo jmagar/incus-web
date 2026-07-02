@@ -36,6 +36,7 @@ import {
 } from "@/components/ui/aurora/description-list";
 import { StatCard, StatGrid } from "@/components/ui/aurora/stat-card";
 import { StatusIndicator } from "@/components/ui/aurora/status-indicator";
+import { AgentRunDispatch } from "@/components/agent-run-dispatch";
 import { WorkspaceActions } from "@/components/workspace-actions";
 import type {
   CheckStatus,
@@ -387,6 +388,7 @@ function WorkspaceCard({ workspace }: { workspace: Workspace }) {
         </StatGrid>
 
         <WorkspaceFeatures workspace={workspace} />
+        <AgentRunDispatch workspace={workspace} />
         <SetupCompleteNotice workspace={workspace} />
         <SetupProgressPanel workspace={workspace} />
       </CardContent>

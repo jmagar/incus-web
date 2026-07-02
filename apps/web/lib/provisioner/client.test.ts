@@ -122,4 +122,19 @@ describe("provisioner client", () => {
       error: { code: "invalid_input" },
     });
   });
+
+  it("returns an empty agent run list in the static prototype client", async () => {
+    const client = createStaticPrototypeStatusClient(status);
+    const listCommand: ProvisionerCommand<"ListAgentRuns"> = {
+      ...command,
+      type: "ListAgentRuns",
+      payload: { limit: 20 },
+    };
+    const operation = await client.send(listCommand);
+
+    expect(operation).toMatchObject({
+      status: "succeeded",
+      result: { runs: [] },
+    });
+  });
 });

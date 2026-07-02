@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom/vitest";
 
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { WorkspaceDashboard } from "@/components/workspace-dashboard";
@@ -55,6 +55,13 @@ const inventory: WorkspaceInventory = {
 describe("WorkspaceDashboard", () => {
   beforeEach(() => {
     window.localStorage.clear();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ ok: true, runs: [] }),
+      }),
+    );
   });
 
   it("renders actor, workspace, setup completion, and terminal link", () => {
@@ -83,6 +90,7 @@ describe("WorkspaceDashboard", () => {
     expect(
       screen.getByRole("link", { name: /open terminal/i }),
     ).toHaveAttribute("href", "/terminal/");
+    expect(screen.getByRole("heading", { name: "Agent runs" })).toBeInTheDocument();
   });
 
   it("dismisses ready setup for the current container", () => {
@@ -131,5 +139,71 @@ describe("WorkspaceDashboard", () => {
     render(<WorkspaceDashboard inventory={{ ...inventory, workspaces: [] }} />);
 
     expect(screen.getByText("No workspace access")).toBeInTheDocument();
+  });
+
+  it("submits an agent run and displays progress identity", async () => {
+    const failedCodexRun = {
+      id: "run_20260702000102_ab12cd34",
+      workspaceId: "workspace-incus-web",
+      ownerUserId: "oidc:test@example.com",
+      container: {
+        name: "agent-run-ab12cd34",
+        project: "default",
+        sourceContainer: "incus-web-agent-golden",
+        sourceProject: "default",
+        createdFrom: "golden",
+        state: "planned",
+      },
+      agent: "codex",
+      repoUrl: "https://github.com/jmagar/incus-web.git",
+      task: "Run tests",
+      phase: "failed",
+      status: "failed",
+      createdAt: "2026-07-02T00:01:02.000Z",
+      updatedAt: "2026-07-02T00:01:03.000Z",
+      completedAt: "2026-07-02T00:01:03.000Z",
+      controller: { kind: "codex-app-server" },
+      lastLogExcerpt:
+        "Codex app-server controller is not configured for this host.",
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ ok: true, runs: [] }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          ok: true,
+          run: failedCodexRun,
+        }),
+      })
+      .mockResolvedValue({
+        ok: true,
+        json: async () => ({ ok: true, runs: [failedCodexRun] }),
+      });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<WorkspaceDashboard inventory={inventory} />);
+
+    fireEvent.change(screen.getByLabelText("Repo URL"), {
+      target: { value: "https://github.com/jmagar/incus-web.git" },
+    });
+    fireEvent.change(screen.getByLabelText("Task"), {
+      target: { value: "Run tests" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /dispatch run/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/run_20260702000102_ab12cd34/)).toBeInTheDocument();
+    });
+    expect(screen.getAllByText(/agent-run-ab12cd34/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/codex-app-server/).length).toBeGreaterThan(0);
+    expect(
+      screen.getByText(
+        "Codex app-server controller is not configured for this host.",
+      ),
+    ).toBeInTheDocument();
   });
 });
