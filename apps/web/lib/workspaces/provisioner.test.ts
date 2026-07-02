@@ -168,8 +168,10 @@ describe("workspace inventory provisioner", () => {
     expect(inventory.workspaces[0]?.terminalUrl).toBeUndefined();
     expect(inventory.workspaces[0]?.setup).toMatchObject({
       phase: "ready",
-      miseStatus: "unknown",
-      dotfilesStatus: "unknown",
+      commandStatus: "ok",
+      packageStatus: "ok",
+      miseStatus: "ok",
+      dotfilesStatus: "ok",
     });
   });
 

@@ -2,14 +2,25 @@
 
 import {
   BoxesIcon,
+  CameraIcon,
+  CheckCircle2Icon,
   CircleGaugeIcon,
   DatabaseIcon,
+  FingerprintIcon,
   FolderGit2Icon,
+  GitBranchIcon,
+  KeyRoundIcon,
+  SlidersHorizontalIcon,
   ShieldCheckIcon,
-  SparklesIcon,
+  SignalIcon,
+  Share2Icon,
   TerminalIcon,
+  UploadIcon,
   UserRoundIcon,
+  XIcon,
 } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
+import { useState, type ReactNode } from "react";
 
 import { Badge } from "@/components/ui/aurora/badge";
 import {
@@ -23,13 +34,13 @@ import {
   DescriptionItem,
   DescriptionList,
 } from "@/components/ui/aurora/description-list";
-import { Separator } from "@/components/ui/aurora/separator";
 import { StatCard, StatGrid } from "@/components/ui/aurora/stat-card";
 import { StatusIndicator } from "@/components/ui/aurora/status-indicator";
-import { Toolbar, ToolbarGroup } from "@/components/ui/aurora/toolbar";
+import { AgentRunDispatch } from "@/components/agent-run-dispatch";
 import { WorkspaceActions } from "@/components/workspace-actions";
 import type {
   CheckStatus,
+  SetupPhase,
   Workspace,
   WorkspaceInventory,
   WorkspaceState,
@@ -66,9 +77,32 @@ function checkTone(status: CheckStatus) {
   return "neutral";
 }
 
+function setupPhaseTone(phase: SetupPhase) {
+  if (phase === "ready") return "success";
+  if (phase === "failed") return "error";
+  if (phase === "not_configured" || phase === "queued") return "neutral";
+  return "warn";
+}
+
+function setupPhaseLabel(phase: SetupPhase) {
+  if (phase === "ready") return "complete";
+  return phase.replaceAll("_", " ");
+}
+
+function metricValue(value: string) {
+  if (value === "unknown" || value.includes("pending")) {
+    return (
+      <span className="aurora-text-section leading-tight text-[var(--aurora-text-muted)]">
+        {value}
+      </span>
+    );
+  }
+  return value;
+}
+
 function SetupCheck({ label, status }: { label: string; status: CheckStatus }) {
   return (
-    <div className="flex items-center justify-between gap-3 rounded-[10px] border border-transparent px-2 py-1.5 transition-colors hover:border-[var(--aurora-border-default)] hover:bg-[var(--aurora-hover-bg)]">
+    <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 border-b border-[var(--aurora-border-default)] px-3 py-2 last:border-b-0">
       <span className="aurora-text-ui text-[var(--aurora-text-muted)]">
         {label}
       </span>
@@ -79,17 +113,235 @@ function SetupCheck({ label, status }: { label: string; status: CheckStatus }) {
   );
 }
 
+function SetupCompleteNotice({ workspace }: { workspace: Workspace }) {
+  const storageKey = `incus-web:setup-complete-dismissed:${workspace.id}:${workspace.createdAt}`;
+  const [dismissed, setDismissed] = useState(
+    () =>
+      typeof window !== "undefined" &&
+      window.localStorage.getItem(storageKey) === "true",
+  );
+
+  if (workspace.setup.phase !== "ready" || dismissed) {
+    return null;
+  }
+
+  return (
+    <section className="flex items-center justify-between gap-3 rounded-[var(--aurora-radius-2)] border border-[color-mix(in_srgb,var(--aurora-success)_36%,var(--aurora-border-default))] bg-[color-mix(in_srgb,var(--aurora-success)_8%,var(--aurora-control-surface))] px-4 py-3 shadow-[var(--aurora-highlight-medium)]">
+      <div className="flex min-w-0 items-center gap-3">
+        <CheckCircle2Icon
+          aria-hidden="true"
+          className="size-4 shrink-0 text-[var(--aurora-success)]"
+        />
+        <div className="min-w-0">
+          <p className="aurora-text-ui text-[var(--aurora-text-primary)]">
+            Setup: complete
+          </p>
+          <p className="aurora-text-meta">
+            Baseline provisioning finished for this container.
+          </p>
+        </div>
+      </div>
+      <button
+        type="button"
+        className="inline-flex size-7 shrink-0 items-center justify-center rounded-[var(--aurora-radius-1)] border border-[var(--aurora-border-default)] bg-[var(--aurora-control-surface)] text-[var(--aurora-text-muted)] transition-colors hover:border-[var(--aurora-border-strong)] hover:text-[var(--aurora-text-primary)]"
+        aria-label="Dismiss setup complete"
+        onClick={() => {
+          window.localStorage.setItem(storageKey, "true");
+          setDismissed(true);
+        }}
+      >
+        <XIcon aria-hidden="true" className="size-3.5" />
+      </button>
+    </section>
+  );
+}
+
+function SetupProgressPanel({ workspace }: { workspace: Workspace }) {
+  if (workspace.setup.phase === "ready") {
+    return null;
+  }
+
+  return (
+    <section className="overflow-hidden rounded-[var(--aurora-radius-2)] border border-[var(--aurora-border-default)] bg-[var(--aurora-control-surface)]">
+      <div className="flex items-center justify-between gap-3 border-b border-[var(--aurora-border-default)] px-4 py-3">
+        <SectionLabel icon={DatabaseIcon} tone="rose">
+          Setup
+        </SectionLabel>
+        <Badge tone={setupPhaseTone(workspace.setup.phase)} shape="tag">
+          {setupPhaseLabel(workspace.setup.phase)}
+        </Badge>
+      </div>
+      <div>
+        <SetupCheck label="Commands" status={workspace.setup.commandStatus} />
+        <SetupCheck label="Packages" status={workspace.setup.packageStatus} />
+        <SetupCheck label="mise" status={workspace.setup.miseStatus} />
+      </div>
+      {workspace.setup.lastLogExcerpt ? (
+        <div className="border-t border-[var(--aurora-border-default)] px-3 py-2">
+          <p className="aurora-text-meta">{workspace.setup.lastLogExcerpt}</p>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function WorkspaceFeature({
+  icon: Icon,
+  label,
+  value,
+  detail,
+  tone = "cyan",
+  href,
+}: {
+  icon: LucideIcon;
+  label: string;
+  value: string;
+  detail: string;
+  tone?: "cyan" | "rose" | "success" | "warn";
+  href?: string;
+}) {
+  const color =
+    tone === "rose"
+      ? "var(--aurora-accent-pink)"
+      : tone === "success"
+        ? "var(--aurora-success)"
+        : tone === "warn"
+          ? "var(--aurora-warn)"
+          : "var(--aurora-accent-primary)";
+  const className =
+    "grid min-h-[82px] grid-cols-[auto_minmax(0,1fr)] gap-3 rounded-[4px] border border-[var(--aurora-border-default)] bg-[var(--aurora-control-surface)] p-3 text-left";
+  const content = (
+    <>
+      <Icon aria-hidden="true" className="mt-0.5 size-4" style={{ color }} />
+      <div className="min-w-0">
+        <div className="flex min-w-0 items-center justify-between gap-2">
+          <p className="aurora-text-ui truncate text-[var(--aurora-text-primary)]">
+            {label}
+          </p>
+          <Badge tone={tone === "cyan" ? "info" : tone} shape="tag">
+            {value}
+          </Badge>
+        </div>
+        <p className="aurora-text-meta mt-2">{detail}</p>
+      </div>
+    </>
+  );
+
+  if (href) {
+    return (
+      <a className={className} href={href}>
+        {content}
+      </a>
+    );
+  }
+
+  return <div className={className}>{content}</div>;
+}
+
+function WorkspaceFeatures({ workspace }: { workspace: Workspace }) {
+  return (
+    <section>
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <SectionLabel icon={SlidersHorizontalIcon}>Workspace features</SectionLabel>
+        <span className="aurora-text-meta">Prototype capability map</span>
+      </div>
+      <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+        <WorkspaceFeature
+          icon={TerminalIcon}
+          label="Terminal"
+          value={workspace.terminalUrl ? "live" : "pending"}
+          detail={workspace.terminalUrl ?? "Route not exposed yet"}
+          href={workspace.terminalUrl}
+          tone={workspace.terminalUrl ? "success" : "warn"}
+        />
+        <WorkspaceFeature
+          icon={Share2Icon}
+          label="Sharing"
+          value="private"
+          detail="No user or org grants by default"
+          tone="success"
+        />
+        <WorkspaceFeature
+          icon={CameraIcon}
+          label="Snapshots"
+          value="none"
+          detail="ZFS clone path for fast workspace copies"
+        />
+        <WorkspaceFeature
+          icon={GitBranchIcon}
+          label="Dotfiles"
+          value={workspace.setup.dotfilesStatus}
+          detail="Installed during setup; drift is user state"
+          tone={workspace.setup.dotfilesStatus === "ok" ? "success" : "warn"}
+        />
+        <WorkspaceFeature
+          icon={UploadIcon}
+          label="MCP import"
+          value="ready"
+          detail="Browser import flow for user config files"
+          tone="rose"
+        />
+        <WorkspaceFeature
+          icon={KeyRoundIcon}
+          label="Secrets"
+          value="age"
+          detail="Age key upload must be encrypted at rest"
+          tone="warn"
+        />
+      </div>
+    </section>
+  );
+}
+
+function SectionLabel({
+  icon: Icon,
+  children,
+  tone = "cyan",
+}: {
+  icon: LucideIcon;
+  children: ReactNode;
+  tone?: "cyan" | "rose" | "success";
+}) {
+  const color =
+    tone === "rose"
+      ? "var(--aurora-accent-pink)"
+      : tone === "success"
+        ? "var(--aurora-success)"
+        : "var(--aurora-accent-primary)";
+
+  return (
+    <div className="flex items-center gap-2">
+      <Icon aria-hidden="true" className="size-4" style={{ color }} />
+      <h2 className="aurora-text-label text-[var(--aurora-text-primary)]">
+        {children}
+      </h2>
+    </div>
+  );
+}
+
 function WorkspaceCard({ workspace }: { workspace: Workspace }) {
   return (
-    <Card accent="cyan" className="overflow-hidden">
-      <CardHeader className="relative flex flex-col gap-5 border-b-[var(--aurora-border-default)] bg-[linear-gradient(180deg,color-mix(in_srgb,var(--aurora-accent-primary)_10%,transparent),transparent)] p-5 md:flex-row md:items-start md:justify-between">
-        <div className="absolute inset-y-5 left-0 w-[3px] rounded-r-full bg-[var(--aurora-accent-primary)]" />
-        <div className="min-w-0 pl-2">
+    <Card
+      accent={false}
+      elevated={false}
+      className="overflow-hidden"
+      style={{
+        background: "var(--aurora-panel-medium)",
+        borderRadius: 4,
+        boxShadow: "none",
+      }}
+    >
+      <CardHeader className="grid gap-4 border-b-[var(--aurora-border-default)] bg-[var(--aurora-panel-medium)] p-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
+        <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
-            <CardTitle as="h2" className="truncate">
+            <CardTitle as="h1" className="truncate">
               {workspace.name}
             </CardTitle>
-            <Badge tone={stateTone(workspace.state)} dot pulse={workspace.state === "running"}>
+            <Badge
+              tone={stateTone(workspace.state)}
+              dot
+              pulse={workspace.state === "running"}
+            >
               {workspace.state}
             </Badge>
           </div>
@@ -97,87 +349,193 @@ function WorkspaceCard({ workspace }: { workspace: Workspace }) {
             {workspace.incusProject} / {workspace.incusContainer}
           </CardDescription>
         </div>
-        <Toolbar className="w-fit">
-          <ToolbarGroup>
-            <StatusIndicator
-              tone={stateStatusTone(workspace.state)}
-              label={workspace.state}
-            />
-          </ToolbarGroup>
+
+        <div className="flex flex-col items-start gap-3 lg:items-end">
+          <StatusIndicator
+            tone={stateStatusTone(workspace.state)}
+            label={workspace.state}
+          />
           <WorkspaceActions workspace={workspace} />
-        </Toolbar>
+        </div>
       </CardHeader>
 
-      <CardContent className="flex flex-col gap-5 p-5">
+      <CardContent className="space-y-5 p-4">
         <StatGrid>
           <StatCard
+            compact
             icon={ICON_CPU}
             label="CPU"
-            value={workspace.resources.cpu}
+            value={metricValue(workspace.resources.cpu)}
             tone="info"
+            style={{ borderRadius: 4, boxShadow: "none" }}
           />
           <StatCard
+            compact
             icon={ICON_MEMORY}
             label="Memory"
-            value={workspace.resources.memory}
+            value={metricValue(workspace.resources.memory)}
             tone="success"
+            style={{ borderRadius: 4, boxShadow: "none" }}
           />
           <StatCard
+            compact
             icon={ICON_STORAGE}
             label="Storage"
-            value={workspace.resources.storage}
+            value={metricValue(workspace.resources.storage)}
             tone="warn"
+            style={{ borderRadius: 4, boxShadow: "none" }}
           />
         </StatGrid>
 
-        <Separator />
-
-        <div className="grid gap-4 lg:grid-cols-[1.15fr_0.85fr]">
-          <div className="rounded-[var(--aurora-radius-2)] border border-[var(--aurora-border-default)] bg-[var(--aurora-control-surface)] p-4">
-            <div className="flex items-center gap-2">
-              <DatabaseIcon
-                aria-hidden="true"
-                className="size-4 text-[var(--aurora-accent-pink)]"
-              />
-              <h2 className="aurora-text-label text-[var(--aurora-text-primary)]">
-                Setup status
-              </h2>
-            </div>
-            <div className="mt-3 grid gap-1">
-              <SetupCheck label="Commands" status={workspace.setup.commandStatus} />
-              <SetupCheck label="Packages" status={workspace.setup.packageStatus} />
-              <SetupCheck label="mise" status={workspace.setup.miseStatus} />
-              <SetupCheck label="dotfiles" status={workspace.setup.dotfilesStatus} />
-            </div>
-          </div>
-
-          <div className="rounded-[var(--aurora-radius-2)] border border-[color-mix(in_srgb,var(--aurora-accent-pink)_28%,var(--aurora-border-default))] bg-[linear-gradient(180deg,color-mix(in_srgb,var(--aurora-accent-pink)_8%,transparent),var(--aurora-control-surface))] p-4 shadow-[var(--aurora-highlight-medium)]">
-            <div className="flex items-center gap-2">
-              <FolderGit2Icon
-                aria-hidden="true"
-                className="size-4 text-[var(--aurora-accent-pink)]"
-              />
-              <h2 className="aurora-text-label text-[var(--aurora-text-primary)]">
-                Template
-              </h2>
-            </div>
-            <DescriptionList className="mt-3 bg-transparent">
-              <DescriptionItem label="Image" value={workspace.templateVersion} active />
-              <DescriptionItem
-                label="Profile"
-                value={
-                  <span className="aurora-text-code text-[var(--aurora-accent-pink-strong)]">
-                    {workspace.resourceProfileId}
-                  </span>
-                }
-              />
-              {workspace.accessNote ? (
-                <DescriptionItem label="Access" value={workspace.accessNote} />
-              ) : null}
-            </DescriptionList>
-          </div>
-        </div>
+        <WorkspaceFeatures workspace={workspace} />
+        <AgentRunDispatch workspace={workspace} />
+        <SetupCompleteNotice workspace={workspace} />
+        <SetupProgressPanel workspace={workspace} />
       </CardContent>
+    </Card>
+  );
+}
+
+function DetailChip({
+  icon: Icon,
+  label,
+  value,
+  tone = "cyan",
+}: {
+  icon: LucideIcon;
+  label: string;
+  value: string;
+  tone?: "cyan" | "rose" | "success" | "warn";
+}) {
+  const color =
+    tone === "rose"
+      ? "var(--aurora-accent-pink)"
+      : tone === "success"
+        ? "var(--aurora-success)"
+        : tone === "warn"
+          ? "var(--aurora-warn)"
+          : "var(--aurora-accent-primary)";
+
+  return (
+    <span
+      title={`${label}: ${value}`}
+      className="inline-flex size-7 items-center justify-center rounded-[4px] border border-[var(--aurora-border-default)] bg-[var(--aurora-control-surface)]"
+    >
+      <Icon aria-hidden="true" className="size-4" style={{ color }} />
+      <span className="sr-only">
+        {label}: {value}
+      </span>
+    </span>
+  );
+}
+
+function WorkspaceInspector({ workspace }: { workspace: Workspace }) {
+  const terminalRoute = workspace.terminalUrl ?? "Not exposed";
+
+  return (
+    <aside className="rounded-[4px] border border-[var(--aurora-border-default)] bg-[var(--aurora-panel-medium)] p-4">
+      <div className="flex items-start justify-between gap-3">
+        <SectionLabel icon={FolderGit2Icon} tone="rose">
+          Details
+        </SectionLabel>
+        <div className="flex flex-wrap justify-end gap-2">
+          <DetailChip
+            icon={ShieldCheckIcon}
+            label="Gate"
+            value="Authelia"
+            tone="success"
+          />
+          <DetailChip
+            icon={FingerprintIcon}
+            label="Privilege"
+            value="unprivileged"
+          />
+          <DetailChip
+            icon={SignalIcon}
+            label="Signal rule"
+            value="enabled"
+            tone="success"
+          />
+          <DetailChip
+            icon={DatabaseIcon}
+            label="Setup"
+            value={setupPhaseLabel(workspace.setup.phase)}
+            tone={workspace.setup.phase === "ready" ? "success" : "warn"}
+          />
+        </div>
+      </div>
+
+      <DescriptionList className="mt-3 bg-transparent">
+        <DescriptionItem
+          label="Image"
+          value={workspace.templateVersion}
+          active
+        />
+        <DescriptionItem label="Profile" value={workspace.resourceProfileId} />
+        <DescriptionItem
+          label="Terminal"
+          value={
+            <span className="aurora-text-code text-[var(--aurora-accent-pink-strong)]">
+              {terminalRoute}
+            </span>
+          }
+        />
+        <DescriptionItem
+          label="Dotfiles"
+          value={workspace.setup.dotfilesStatus}
+          active={workspace.setup.dotfilesStatus === "ok"}
+        />
+      </DescriptionList>
+
+      <div className="mt-3 border-t border-[var(--aurora-border-default)] pt-3">
+        {workspace.accessNote ? (
+          <p className="aurora-text-body-sm text-[var(--aurora-text-muted)]">
+            {workspace.accessNote}
+          </p>
+        ) : (
+          <p className="aurora-text-meta">Shared access is off by default.</p>
+        )}
+      </div>
+    </aside>
+  );
+}
+
+function EmptyAccessState({ inventory }: { inventory: WorkspaceInventory }) {
+  if (inventory.provisionerError) {
+    return (
+      <Card accent="rose" className="p-6">
+        <p className="aurora-text-section">Workspace provisioner failed</p>
+        <p className="aurora-text-body mt-2 text-[var(--aurora-text-muted)]">
+          {inventory.provisionerError.message}
+        </p>
+        <DescriptionList className="mt-4 bg-transparent">
+          <DescriptionItem
+            label="Code"
+            value={inventory.provisionerError.code}
+            active
+          />
+          <DescriptionItem
+            label="Request"
+            value={inventory.provisionerError.requestId}
+          />
+          {inventory.provisionerError.workspaceId ? (
+            <DescriptionItem
+              label="Workspace"
+              value={inventory.provisionerError.workspaceId}
+            />
+          ) : null}
+        </DescriptionList>
+      </Card>
+    );
+  }
+
+  return (
+    <Card accent="rose" className="p-6">
+      <p className="aurora-text-section">No workspace access</p>
+      <p className="aurora-text-body mt-2 text-[var(--aurora-text-muted)]">
+        This authenticated account is not assigned to the current prototype
+        workspace.
+      </p>
     </Card>
   );
 }
@@ -187,108 +545,72 @@ export function WorkspaceDashboard({
 }: {
   inventory: WorkspaceInventory;
 }) {
+  const primaryWorkspace = inventory.workspaces[0];
+
   return (
-    <main className="min-h-screen overflow-hidden bg-[var(--aurora-shell-bg)] text-[var(--aurora-text-primary)]">
-      <div className="mx-auto flex min-h-screen w-full max-w-7xl flex-col px-4 py-4 md:px-6 lg:px-8">
-        <header className="mb-5 flex items-center justify-between rounded-[var(--aurora-radius-2)] border border-[var(--aurora-border-default)] bg-[linear-gradient(180deg,var(--aurora-panel-medium),color-mix(in_srgb,var(--aurora-panel-medium)_82%,var(--aurora-page-bg)))] px-4 py-3 shadow-[var(--aurora-shadow-medium),var(--aurora-highlight-medium)]">
+    <main className="aurora-page-shell min-h-screen text-[var(--aurora-text-primary)]">
+      <div className="mx-auto flex min-h-screen w-full max-w-7xl flex-col gap-3 px-4 py-4 md:px-6 lg:px-8">
+        <header className="flex flex-col gap-3 rounded-[4px] border border-[var(--aurora-border-default)] bg-[var(--aurora-panel-medium)] px-4 py-3 md:flex-row md:items-center md:justify-between">
           <div className="flex items-center gap-3">
-            <div className="flex size-9 items-center justify-center rounded-[12px] border border-[color-mix(in_srgb,var(--aurora-accent-primary)_42%,var(--aurora-border-strong))] bg-[color-mix(in_srgb,var(--aurora-accent-primary)_12%,var(--aurora-control-surface))] shadow-[var(--aurora-active-glow)]">
-              <BoxesIcon aria-hidden="true" className="size-4 text-[var(--aurora-accent-primary)]" />
+            <div className="flex size-9 items-center justify-center rounded-[4px] border border-[var(--aurora-border-strong)] bg-[var(--aurora-control-surface)]">
+              <BoxesIcon
+                aria-hidden="true"
+                className="size-4 text-[var(--aurora-accent-primary)]"
+              />
             </div>
             <div>
               <p className="aurora-text-section leading-none">incus-web</p>
-              <p className="aurora-text-meta">Workspace control plane</p>
+              <p className="aurora-text-meta mt-1">Workspace control plane</p>
             </div>
           </div>
 
-          <div className="flex min-w-0 items-center gap-3">
-            <ShieldCheckIcon
-              aria-hidden="true"
-              className="hidden size-4 text-[var(--aurora-success)] sm:block"
+          <div className="flex min-w-0 flex-wrap items-center gap-2 md:justify-end">
+            <DetailChip
+              icon={CircleGaugeIcon}
+              label="Workspaces"
+              value={`${inventory.workspaces.length}`}
             />
-            <div className="hidden min-w-0 text-right sm:block">
-              <p className="aurora-text-ui truncate">{inventory.actor.displayName}</p>
+            <DetailChip
+              icon={TerminalIcon}
+              label="Terminal route"
+              value={primaryWorkspace?.terminalUrl ?? "pending"}
+              tone="rose"
+            />
+            <DetailChip
+              icon={ShieldCheckIcon}
+              label="Auth gate"
+              value="Authelia"
+              tone="success"
+            />
+            <div className="min-w-0 md:text-right">
+              <p className="aurora-text-ui truncate">
+                {inventory.actor.displayName}
+              </p>
               <p className="aurora-text-meta truncate">{inventory.actor.email}</p>
             </div>
             <UserRoundIcon
               aria-hidden="true"
-              className="size-5 text-[var(--aurora-accent-primary)] sm:hidden"
+              className="size-5 text-[var(--aurora-accent-primary)] md:hidden"
             />
           </div>
         </header>
 
-        <section className="mb-5 grid items-start gap-4 lg:grid-cols-[1.2fr_0.8fr]">
-          <div className="relative overflow-hidden rounded-[var(--aurora-radius-3)] border border-[color-mix(in_srgb,var(--aurora-accent-primary)_38%,var(--aurora-border-default))] bg-[linear-gradient(135deg,color-mix(in_srgb,var(--aurora-accent-primary)_12%,var(--aurora-panel-strong)),var(--aurora-panel-strong)_46%,color-mix(in_srgb,var(--aurora-accent-pink)_7%,var(--aurora-panel-strong)))] p-6 shadow-[var(--aurora-shadow-strong),var(--aurora-highlight-strong)]">
-            <div className="absolute -right-24 -top-24 size-64 rounded-full border border-[color-mix(in_srgb,var(--aurora-accent-primary)_24%,transparent)]" />
-            <div className="absolute right-10 top-8 size-20 rounded-full border border-[color-mix(in_srgb,var(--aurora-accent-pink)_24%,transparent)]" />
-            <div className="relative max-w-3xl">
-              <div className="mb-5 inline-flex items-center gap-2 rounded-[999px] border border-[color-mix(in_srgb,var(--aurora-accent-primary)_36%,var(--aurora-border-default))] bg-[color-mix(in_srgb,var(--aurora-accent-primary)_9%,transparent)] px-3 py-1">
-                <SparklesIcon aria-hidden="true" className="size-3.5 text-[var(--aurora-accent-primary)]" />
-                <span className="aurora-text-meta text-[var(--aurora-accent-strong)]">
-                  Authenticated workspace
-                </span>
-              </div>
-              <h1 className="aurora-text-display-1 text-[var(--aurora-text-primary)]">
-                Workspaces
-              </h1>
-              <p className="aurora-text-body mt-2 max-w-2xl text-[var(--aurora-text-muted)]">
-                Provisioned Incus workspaces with isolated containers, terminal access,
-                dotfile bootstrap status, and resource limits in one operator view.
-              </p>
-            </div>
-          </div>
-
-          <div className="grid gap-3 sm:grid-cols-3 lg:grid-cols-1">
-            <div className="rounded-[var(--aurora-radius-2)] border border-[var(--aurora-border-default)] bg-[var(--aurora-panel-medium)] p-4 shadow-[var(--aurora-shadow-medium),var(--aurora-highlight-medium)]">
-              <CircleGaugeIcon aria-hidden="true" className="mb-3 size-4 text-[var(--aurora-accent-primary)]" />
-              <p className="aurora-text-display-2">{inventory.workspaces.length}</p>
-              <p className="aurora-text-meta">Workspace{inventory.workspaces.length === 1 ? "" : "s"}</p>
-            </div>
-            <div className="rounded-[var(--aurora-radius-2)] border border-[var(--aurora-border-default)] bg-[var(--aurora-panel-medium)] p-4 shadow-[var(--aurora-shadow-medium),var(--aurora-highlight-medium)]">
-              <TerminalIcon aria-hidden="true" className="mb-3 size-4 text-[var(--aurora-accent-pink)]" />
-              <p className="aurora-text-section">Live shell</p>
-              <p className="aurora-text-meta">Ghostty web terminal</p>
-            </div>
-            <div className="rounded-[var(--aurora-radius-2)] border border-[var(--aurora-border-default)] bg-[var(--aurora-panel-medium)] p-4 shadow-[var(--aurora-shadow-medium),var(--aurora-highlight-medium)]">
-              <ShieldCheckIcon aria-hidden="true" className="mb-3 size-4 text-[var(--aurora-success)]" />
-              <p className="aurora-text-section">Authelia</p>
-              <p className="aurora-text-meta">Two-factor gate active</p>
-            </div>
-          </div>
-        </section>
-
         <section className="grid gap-4">
           {inventory.workspaces.length > 0 ? (
             inventory.workspaces.map((workspace) => (
-              <WorkspaceCard key={workspace.id} workspace={workspace} />
+              <div
+                key={`${workspace.id}:${workspace.createdAt}`}
+                className="grid items-start gap-3 xl:grid-cols-[minmax(0,1fr)_300px]"
+              >
+                <WorkspaceCard workspace={workspace} />
+                <WorkspaceInspector workspace={workspace} />
+              </div>
             ))
-          ) : inventory.provisionerError ? (
-            <Card accent="rose" className="p-6">
-              <p className="aurora-text-section">Workspace provisioner failed</p>
-              <p className="aurora-text-body mt-2 text-[var(--aurora-text-muted)]">
-                {inventory.provisionerError.message}
-              </p>
-              <DescriptionList className="mt-4 bg-transparent">
-                <DescriptionItem label="Code" value={inventory.provisionerError.code} active />
-                <DescriptionItem label="Request" value={inventory.provisionerError.requestId} />
-                {inventory.provisionerError.workspaceId ? (
-                  <DescriptionItem
-                    label="Workspace"
-                    value={inventory.provisionerError.workspaceId}
-                  />
-                ) : null}
-              </DescriptionList>
-            </Card>
           ) : (
-            <Card accent="rose" className="p-6">
-              <p className="aurora-text-section">No workspace access</p>
-              <p className="aurora-text-body mt-2 text-[var(--aurora-text-muted)]">
-                This authenticated account is not assigned to the current
-                prototype workspace.
-              </p>
-            </Card>
+            <EmptyAccessState inventory={inventory} />
           )}
         </section>
+
       </div>
     </main>
   );

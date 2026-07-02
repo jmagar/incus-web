@@ -42,7 +42,9 @@ describe("provisioner status adapter", () => {
 
   it("creates prototype runtime status from environment defaults", () => {
     delete process.env.INCUS_WEB_PROTOTYPE_CPU;
+    delete process.env.INCUS_WEB_PROTOTYPE_MEMORY_USED_BYTES;
     delete process.env.INCUS_WEB_PROTOTYPE_MEMORY_BYTES;
+    delete process.env.INCUS_WEB_PROTOTYPE_DISK_USED_BYTES;
     delete process.env.INCUS_WEB_PROTOTYPE_DISK_BYTES;
 
     const status = prototypeRuntimeStatus(
@@ -55,7 +57,10 @@ describe("provisioner status adapter", () => {
       incusProject: "default",
       incusContainer: "incus-web",
       cpuCount: 2,
+      memoryUsedBytes: 96 * 1024 * 1024,
       memoryLimitBytes: 4 * 1024 * 1024 * 1024,
+      rootDiskUsedBytes: 5 * 1024 * 1024 * 1024,
+      rootDiskLimitBytes: 20 * 1024 * 1024 * 1024,
     });
   });
 
@@ -98,7 +103,14 @@ describe("provisioner status adapter", () => {
       },
       setup: {
         phase: "ready",
+        commandStatus: "ok",
+        packageStatus: "ok",
+        miseStatus: "ok",
+        dotfilesStatus: "ok",
       },
+      templateVersion: "ubuntu-24.04-code-v1",
+      accessNote:
+        "Private workspace. Sharing requires an explicit user or org grant.",
     });
   });
 

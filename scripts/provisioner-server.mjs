@@ -3,6 +3,12 @@ import { spawn } from "node:child_process";
 import { chmod, lstat, mkdir, unlink } from "node:fs/promises";
 import { createServer } from "node:http";
 import { createConnection } from "node:net";
+import {
+  agentRunConfigFromEnv,
+  createAgentRunStore,
+  dispatchAgentRun,
+  listAgentRuns,
+} from "./agent-runs.mjs";
 
 const token = (process.env.INCUS_WEB_PROVISIONER_TOKEN || "").trim();
 const socketPath =
@@ -20,6 +26,8 @@ const incusContainer =
   process.env.INCUS_WEB_INCUS_CONTAINER ||
   process.env.CONTAINER_NAME ||
   "incus-web";
+const prototypeSetupPhase =
+  process.env.INCUS_WEB_PROTOTYPE_SETUP_PHASE || "ready";
 const commandTimeoutMs = Number.parseInt(
   process.env.INCUS_WEB_PROVISIONER_COMMAND_TIMEOUT_MS || "8000",
   10,
@@ -43,6 +51,8 @@ const maxConcurrentIncusCommands = Number.parseInt(
 let activeIncusCommands = 0;
 let statusCache;
 let statusInFlight;
+const agentRunConfig = agentRunConfigFromEnv();
+const agentRunStore = createAgentRunStore(agentRunConfig.storePath);
 const setupPhases = new Set([
   "not_configured",
   "queued",
@@ -276,6 +286,26 @@ async function incusText(args, options) {
   return (await run("incus", ["--project", incusProject, ...args], options)).trim();
 }
 
+async function agentIncus(args, options) {
+  return (await run("incus", args, options)).trim();
+}
+
+async function execInAgentContainer(agentRun, script, options) {
+  return agentIncus(
+    [
+      "--project",
+      agentRun.container.project,
+      "exec",
+      agentRun.container.name,
+      "--",
+      "sh",
+      "-lc",
+      script,
+    ],
+    options,
+  );
+}
+
 function withIncusProject(path) {
   const separator = path.includes("?") ? "&" : "?";
   return `${path}${separator}project=${encodeURIComponent(incusProject)}`;
@@ -321,7 +351,9 @@ async function getWorkspaceStatus(command, options) {
     memoryLimitBytes: parseByteLimit(memoryLimit),
     rootDiskUsedBytes: rootDiskUsage(state),
     rootDiskLimitBytes: parseByteLimit(rootDiskSize),
-    setupPhase: setupPhase(instance.config?.["user.incus-web.setup-phase"]),
+    setupPhase: setupPhase(
+      instance.config?.["user.incus-web.setup-phase"] || prototypeSetupPhase,
+    ),
     lastCheckedAt: new Date().toISOString(),
   };
 }
@@ -519,6 +551,27 @@ async function handleCommand(command, options) {
           command,
           "succeeded",
           await restartWorkspace(command, options),
+        );
+      case "DispatchAgentRun":
+        return operation(
+          command,
+          "succeeded",
+          await dispatchAgentRun(command, {
+            config: agentRunConfig,
+            store: agentRunStore,
+            incus: (args) => agentIncus(args, options),
+            execInContainer: (agentRun, script) =>
+              execInAgentContainer(agentRun, script, options),
+          }),
+        );
+      case "ListAgentRuns":
+        return operation(
+          command,
+          "succeeded",
+          await listAgentRuns(command, {
+            config: agentRunConfig,
+            store: agentRunStore,
+          }),
         );
       default:
         return operation(

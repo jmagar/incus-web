@@ -52,30 +52,42 @@ export function createStaticPrototypeStatusClient(
     async send<TType extends ProvisionerCommandType>(
       command: ProvisionerCommand<TType>,
     ): Promise<ProvisionerOperation<TType>> {
-      if (command.type !== "GetWorkspaceStatus") {
+      if (command.type === "GetWorkspaceStatus") {
         return {
           id: `static-prototype-op-${command.requestId}`,
           requestId: command.requestId,
           type: command.type,
           workspaceId: command.workspace.id,
-          status: "failed",
-          error: {
-            code: "invalid_input",
-            message:
-              "static prototype status client only supports GetWorkspaceStatus",
-            retryable: false,
-          },
-        } as ProvisionerOperation<TType>;
+          status: "succeeded",
+          result: status,
+          startedAt: status.lastCheckedAt,
+          completedAt: status.lastCheckedAt,
+        } as unknown as ProvisionerOperation<TType>;
+      }
+      if (command.type === "ListAgentRuns") {
+        return {
+          id: `static-prototype-op-${command.requestId}`,
+          requestId: command.requestId,
+          type: command.type,
+          workspaceId: command.workspace.id,
+          status: "succeeded",
+          result: { runs: [] },
+          startedAt: status.lastCheckedAt,
+          completedAt: status.lastCheckedAt,
+        } as unknown as ProvisionerOperation<TType>;
       }
       return {
         id: `static-prototype-op-${command.requestId}`,
         requestId: command.requestId,
         type: command.type,
         workspaceId: command.workspace.id,
-        status: "succeeded",
-        result: status,
-        startedAt: status.lastCheckedAt,
-        completedAt: status.lastCheckedAt,
+        status: "failed",
+        error: {
+          code: "invalid_input",
+          message:
+            "static prototype status client only supports GetWorkspaceStatus and ListAgentRuns",
+          retryable: false,
+        },
       } as ProvisionerOperation<TType>;
     },
   });
