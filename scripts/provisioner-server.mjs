@@ -20,6 +20,8 @@ const incusContainer =
   process.env.INCUS_WEB_INCUS_CONTAINER ||
   process.env.CONTAINER_NAME ||
   "incus-web";
+const prototypeSetupPhase =
+  process.env.INCUS_WEB_PROTOTYPE_SETUP_PHASE || "ready";
 const commandTimeoutMs = Number.parseInt(
   process.env.INCUS_WEB_PROVISIONER_COMMAND_TIMEOUT_MS || "8000",
   10,
@@ -321,7 +323,9 @@ async function getWorkspaceStatus(command, options) {
     memoryLimitBytes: parseByteLimit(memoryLimit),
     rootDiskUsedBytes: rootDiskUsage(state),
     rootDiskLimitBytes: parseByteLimit(rootDiskSize),
-    setupPhase: setupPhase(instance.config?.["user.incus-web.setup-phase"]),
+    setupPhase: setupPhase(
+      instance.config?.["user.incus-web.setup-phase"] || prototypeSetupPhase,
+    ),
     lastCheckedAt: new Date().toISOString(),
   };
 }

@@ -50,7 +50,9 @@ export function prototypeRuntimeStatus(
     incusProject: workspace.incusProject,
     incusContainer: workspace.incusContainer,
     cpuCount: numberEnv("INCUS_WEB_PROTOTYPE_CPU", 2),
+    memoryUsedBytes: numberEnv("INCUS_WEB_PROTOTYPE_MEMORY_USED_BYTES", 96 * 1024 * 1024),
     memoryLimitBytes: numberEnv("INCUS_WEB_PROTOTYPE_MEMORY_BYTES", 4 * gib),
+    rootDiskUsedBytes: numberEnv("INCUS_WEB_PROTOTYPE_DISK_USED_BYTES", 5 * gib),
     rootDiskLimitBytes: numberEnv("INCUS_WEB_PROTOTYPE_DISK_BYTES", 20 * gib),
     setupPhase: "ready",
     lastCheckedAt: new Date().toISOString(),
@@ -68,7 +70,10 @@ export function statusToWorkspace(
     slug: "incus-web",
     incusProject: status.incusProject,
     incusContainer: status.incusContainer,
-    templateVersion: "prototype",
+    templateVersion: stringEnv(
+      "INCUS_WEB_TEMPLATE_VERSION",
+      "ubuntu-24.04-code-v1",
+    ),
     state: status.state,
     resourceProfileId: "local-dev",
     resources: {
@@ -81,7 +86,7 @@ export function statusToWorkspace(
     setup: setupSummary(status),
     terminalUrl: optionalUrlEnv("INCUS_WEB_TERMINAL_URL"),
     accessNote:
-      "Single-container prototype. Terminal routing moves behind workspace-scoped sessions before multi-user sharing.",
+      "Private workspace. Sharing requires an explicit user or org grant.",
     createdAt,
     updatedAt: status.lastCheckedAt,
   };
@@ -123,8 +128,20 @@ function formatBytes(bytes: number): string {
 }
 
 function setupSummary(status: WorkspaceRuntimeStatus): WorkspaceSetupSummary {
+  const phase = setupPhase(status.setupPhase);
+  if (phase === "ready") {
+    return {
+      phase,
+      dotfilesStatus: "ok",
+      miseStatus: "ok",
+      commandStatus: "ok",
+      packageStatus: "ok",
+      updatedAt: status.lastCheckedAt,
+    };
+  }
+
   return {
-    phase: setupPhase(status.setupPhase),
+    phase,
     dotfilesStatus: "unknown",
     miseStatus: "unknown",
     commandStatus: "unknown",

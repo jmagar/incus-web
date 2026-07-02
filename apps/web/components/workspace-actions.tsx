@@ -5,10 +5,7 @@ import { PlayIcon, RotateCwIcon, SquareIcon, TerminalIcon } from "lucide-react";
 import * as React from "react";
 
 import { Button } from "@/components/ui/aurora/button";
-import {
-  ToolbarGroup,
-  ToolbarSeparator,
-} from "@/components/ui/aurora/toolbar";
+import { ToolbarGroup } from "@/components/ui/aurora/toolbar";
 import type { Workspace, WorkspaceState } from "@/lib/workspaces/types";
 
 type WorkspaceAction = "start" | "stop" | "restart";
@@ -72,11 +69,7 @@ export function WorkspaceActions({ workspace }: { workspace: Workspace }) {
             </Button>
           ))}
         </ToolbarGroup>
-        <ToolbarSeparator />
         <ToolbarGroup>
-          <Button variant="neutral" disabled>
-            Share later
-          </Button>
           {workspace.terminalUrl ? (
             <Button
               asChild
