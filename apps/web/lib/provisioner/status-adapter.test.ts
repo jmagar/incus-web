@@ -93,13 +93,30 @@ describe("provisioner status adapter", () => {
       state: "running",
       resources: {
         cpu: "2 vCPU",
-        memory: "4 GiB",
+        memory: "128 MiB / 4 GiB",
         storage: "20 GiB",
       },
       setup: {
         phase: "ready",
       },
     });
+  });
+
+  it("maps runtime storage usage when Incus reports it", () => {
+    const workspace = statusToWorkspace(
+      {
+        workspaceId: "workspace-incus-web",
+        state: "running",
+        incusProject: "default",
+        incusContainer: "incus-web",
+        rootDiskUsedBytes: 3 * 1024 * 1024 * 1024,
+        rootDiskLimitBytes: 20 * 1024 * 1024 * 1024,
+        lastCheckedAt: "2026-07-01T00:00:00.000Z",
+      },
+      "oidc:owner@example.com",
+    );
+
+    expect(workspace.resources.storage).toBe("3 GiB / 20 GiB");
   });
 
   it("adds the configured terminal URL to dashboard workspaces", () => {

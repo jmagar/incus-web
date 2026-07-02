@@ -4,8 +4,12 @@ import type {
 } from "@/lib/workspaces/types";
 import {
   PROVISIONER_CONTRACT_VERSION,
+  isProvisionerCommandType,
   type ProvisionerCommand,
+  type ProvisionerCommandType,
   type ProvisionerError,
+  type ProvisionerOperation,
+  type ProvisionerWorkspaceRef,
   validateProvisionerOperation,
 } from "@/lib/provisioner/contracts";
 import {
@@ -120,13 +124,116 @@ function defaultProvisionerClient(ownerUserId: string): ProvisionerClient {
   );
 }
 
+function ownerForActor(actor: ActorContext) {
+  const owner = configuredOwner(actor);
+  if (!owner || !actorMatchesOwner(actor, owner)) {
+    return undefined;
+  }
+  return owner;
+}
+
+function commandActor(actor: ActorContext) {
+  return {
+    userId: actor.userId,
+    oidcSubject: actor.oidcSubject,
+    email: actor.email,
+    displayName: actor.displayName,
+  };
+}
+
+function commandFor<TType extends ProvisionerCommandType>(
+  type: TType,
+  actor: ActorContext,
+  ownerUserId: string,
+  payload: ProvisionerCommand<TType>["payload"],
+): ProvisionerCommand<TType> {
+  return {
+    version: PROVISIONER_CONTRACT_VERSION,
+    requestId: actor.requestId,
+    type,
+    actor: commandActor(actor),
+    workspace: buildPrototypeWorkspaceRef(ownerUserId),
+    payload,
+  } as ProvisionerCommand<TType>;
+}
+
+export function getWorkspaceRefForActor(
+  actor: ActorContext,
+):
+  | { ok: true; workspace: ProvisionerWorkspaceRef }
+  | { ok: false; error: ProvisionerError } {
+  let owner;
+  try {
+    owner = ownerForActor(actor);
+  } catch (error) {
+    return {
+      ok: false,
+      error: {
+        code: "invalid_input",
+        message:
+          error instanceof Error ? error.message : "invalid workspace owner config",
+        retryable: false,
+      },
+    };
+  }
+  if (!owner) {
+    return {
+      ok: false,
+      error: {
+        code: "unauthenticated_service",
+        message: "authenticated actor is not assigned to this workspace",
+        retryable: false,
+      },
+    };
+  }
+  try {
+    return {
+      ok: true,
+      workspace: buildPrototypeWorkspaceRef(owner.userId),
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      error: {
+        code: "invalid_input",
+        message: error instanceof Error ? error.message : "invalid workspace metadata",
+        retryable: false,
+      },
+    };
+  }
+}
+
+export async function sendWorkspaceCommand<TType extends ProvisionerCommandType>(
+  actor: ActorContext,
+  type: TType,
+  payload: ProvisionerCommand<TType>["payload"],
+  client?: ProvisionerClient,
+): Promise<ProvisionerOperation<TType>> {
+  const access = getWorkspaceRefForActor(actor);
+  if (!access.ok) {
+    return failedCommandOperation(actor, type, "unknown", access.error);
+  }
+
+  const command = {
+    ...commandFor(type, actor, access.workspace.ownerUserId, payload),
+    workspace: access.workspace,
+  };
+  const provisioner = client ?? defaultProvisionerClient(access.workspace.ownerUserId);
+  const operation = await provisioner.send(command);
+  const validated = validateProvisionerOperation(operation, command.workspace, type);
+  if (!validated.ok) {
+    return failedCommandOperation(actor, type, command.workspace.id, validated.error);
+  }
+  return validated.value;
+}
+
 export async function getWorkspaceInventory(
   actor: ActorContext,
   client?: ProvisionerClient,
 ): Promise<WorkspaceInventory> {
   let owner;
   try {
-    owner = configuredOwner(actor);
+    owner = ownerForActor(actor);
   } catch (error) {
     return inventoryFailure(actor, "unknown", actor.requestId, {
       code: "invalid_input",
@@ -135,7 +242,7 @@ export async function getWorkspaceInventory(
       retryable: false,
     });
   }
-  if (!owner || !actorMatchesOwner(actor, owner)) {
+  if (!owner) {
     return { actor, workspaces: [] };
   }
 
@@ -150,19 +257,7 @@ export async function getWorkspaceInventory(
     });
   }
   const provisioner = client ?? defaultProvisionerClient(owner.userId);
-  const command: ProvisionerCommand<"GetWorkspaceStatus"> = {
-    version: PROVISIONER_CONTRACT_VERSION,
-    requestId: actor.requestId,
-    type: "GetWorkspaceStatus",
-    actor: {
-      userId: actor.userId,
-      oidcSubject: actor.oidcSubject,
-      email: actor.email,
-      displayName: actor.displayName,
-    },
-    workspace,
-    payload: {},
-  };
+  const command = commandFor("GetWorkspaceStatus", actor, owner.userId, {});
   const operation = await provisioner.send(command);
 
   const validated = validateProvisionerOperation(
@@ -222,13 +317,11 @@ function failedProvisionerClient(
 ): ProvisionerClient {
   return {
     async send(command) {
-      const requestId = isProvisionerCommand(command)
-        ? command.requestId
-        : "unknown";
+      const context = provisionerCommandContext(command);
       return {
-        id: `failed-${requestId}`,
-        requestId,
-        type: "GetWorkspaceStatus",
+        id: `failed-${context.requestId}`,
+        requestId: context.requestId,
+        type: context.type,
         workspaceId,
         status: "failed",
         error: {
@@ -269,13 +362,38 @@ function inventoryFailure(
   };
 }
 
-function isProvisionerCommand(
-  command: unknown,
-): command is ProvisionerCommand<"GetWorkspaceStatus"> {
-  return (
-    typeof command === "object" &&
-    command !== null &&
-    "requestId" in command &&
-    typeof command.requestId === "string"
-  );
+function failedCommandOperation<TType extends ProvisionerCommandType>(
+  actor: ActorContext,
+  type: TType,
+  workspaceId: string,
+  error: ProvisionerError,
+): ProvisionerOperation<TType> {
+  return {
+    id: `failed-${actor.requestId}`,
+    requestId: actor.requestId,
+    type,
+    workspaceId,
+    status: "failed",
+    error,
+    completedAt: new Date().toISOString(),
+  } as ProvisionerOperation<TType>;
+}
+
+function provisionerCommandContext(command: unknown) {
+  if (typeof command !== "object" || command === null) {
+    return {
+      requestId: "unknown",
+      type: "GetWorkspaceStatus" as const,
+    };
+  }
+  return {
+    requestId:
+      "requestId" in command && typeof command.requestId === "string"
+        ? command.requestId
+        : "unknown",
+    type:
+      "type" in command && isProvisionerCommandType(command.type)
+        ? command.type
+        : "GetWorkspaceStatus",
+  };
 }

@@ -7,9 +7,14 @@ import {
 import { createStaticPrototypeStatusClient } from "@/lib/provisioner/client";
 import {
   PROVISIONER_CONTRACT_VERSION,
+  type LifecycleWorkspaceResult,
   type WorkspaceRuntimeStatus,
 } from "@/lib/provisioner/contracts";
-import { getWorkspaceInventory } from "@/lib/workspaces/provisioner";
+import {
+  getWorkspaceRefForActor,
+  getWorkspaceInventory,
+  sendWorkspaceCommand,
+} from "@/lib/workspaces/provisioner";
 
 const ownerEmail = "owner@example.com";
 const ownerSubject = "owner-subject";
@@ -257,6 +262,122 @@ describe("workspace inventory provisioner", () => {
         incusContainer: "incus-web",
       },
       payload: {},
+    });
+  });
+
+  it("sends owner lifecycle commands to the provisioner", async () => {
+    useOwnerEmail();
+    const actor = getActorFromHeaders(
+      authHeaders({
+        subject: "authelia-user-id",
+        displayName: "Owner",
+        requestId: "req-restart",
+      }),
+    );
+    const result: LifecycleWorkspaceResult = {
+      workspaceId: "workspace-incus-web",
+      state: "running",
+      status: {
+        workspaceId: "workspace-incus-web",
+        state: "running",
+        incusProject: "default",
+        incusContainer: "incus-web",
+        lastCheckedAt: "2026-07-01T00:00:00.000Z",
+      },
+    };
+    const client = {
+      send: vi.fn().mockResolvedValue({
+        id: "op-restart",
+        requestId: "req-restart",
+        type: "RestartWorkspace",
+        workspaceId: "workspace-incus-web",
+        status: "succeeded",
+        result,
+      }),
+    };
+
+    const operation = await sendWorkspaceCommand(
+      actor,
+      "RestartWorkspace",
+      { timeoutSeconds: 30 },
+      client,
+    );
+
+    expect(operation.status).toBe("succeeded");
+    expect(client.send).toHaveBeenCalledWith({
+      version: PROVISIONER_CONTRACT_VERSION,
+      requestId: "req-restart",
+      type: "RestartWorkspace",
+      actor: {
+        userId: "oidc:authelia-user-id",
+        oidcSubject: "authelia-user-id",
+        email: ownerEmail,
+        displayName: "Owner",
+      },
+      workspace: {
+        id: "workspace-incus-web",
+        ownerUserId: "oidc:owner@example.com",
+        incusProject: "default",
+        incusContainer: "incus-web",
+      },
+      payload: { timeoutSeconds: 30 },
+    });
+  });
+
+  it("resolves the authorized workspace before action dispatch", () => {
+    useOwnerEmail();
+    const actor = ownerActor();
+
+    expect(getWorkspaceRefForActor(actor)).toMatchObject({
+      ok: true,
+      workspace: {
+        id: "workspace-incus-web",
+        ownerUserId: "oidc:owner@example.com",
+        incusProject: "default",
+        incusContainer: "incus-web",
+      },
+    });
+  });
+
+  it("does not resolve a workspace ref for non-owners", () => {
+    useOwnerEmail();
+    const actor = getActorFromHeaders(
+      authHeaders({ email: "other@example.com", subject: null }),
+    );
+
+    expect(getWorkspaceRefForActor(actor)).toMatchObject({
+      ok: false,
+      error: {
+        code: "unauthenticated_service",
+      },
+    });
+  });
+
+  it("does not send lifecycle commands for non-owners", async () => {
+    useOwnerEmail();
+    const actor = getActorFromHeaders(
+      authHeaders({ email: "other@example.com", subject: null }),
+    );
+    const client = {
+      send: vi.fn(),
+    };
+
+    const operation = await sendWorkspaceCommand(
+      actor,
+      "StopWorkspace",
+      { force: false, timeoutSeconds: 30 },
+      client,
+    );
+
+    expect(client.send).not.toHaveBeenCalled();
+    expect(operation).toMatchObject({
+      type: "StopWorkspace",
+      workspaceId: "unknown",
+      status: "failed",
+      error: {
+        code: "unauthenticated_service",
+        message: "authenticated actor is not assigned to this workspace",
+      },
     });
   });
 

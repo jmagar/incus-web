@@ -91,6 +91,8 @@ trap cleanup_smoke_container EXIT
 incus_cmd start "$SMOKE_CONTAINER_NAME"
 wait_for_running "$SMOKE_CONTAINER_NAME"
 
+validate_container_signals "$SMOKE_CONTAINER_NAME"
+
 log "checking distrobuilder image toolchain"
 timeout_container_bash "$SMOKE_CONTAINER_NAME" "set -euo pipefail
 node --version

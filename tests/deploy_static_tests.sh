@@ -165,6 +165,7 @@ require_literal "expect_blocked_lan 10.0.0.1 80"
 require_literal "expect_blocked_lan 172.16.0.1 80"
 require_literal "expect_blocked_lan 192.168.0.1 80"
 require_literal "expect_blocked_lan 169.254.0.1 80"
+require_literal "validate_container_signals \"\$name\""
 require_literal "validate_container \"\$CONTAINER_NAME\""
 require_literal "configure_host_provisioner \"\$CONTAINER_NAME\""
 require_literal "configure_host_web_app"
@@ -353,7 +354,10 @@ for needle in \
   "INCUS_WEB_PROVISIONER_SOCKET_MODE" \
   "chmod(socketPath, socketMode)" \
   "GetWorkspaceStatus" \
-  "failed to read workspace status from Incus"; do
+  "StartWorkspace" \
+  "StopWorkspace" \
+  "RestartWorkspace" \
+  "failed to complete workspace operation through Incus"; do
   if ! grep -Fq -- "$needle" "$root/scripts/provisioner-server.mjs"; then
     printf 'missing expected host provisioner server content: %s\n' "$needle" >&2
     exit 1
@@ -394,6 +398,8 @@ for needle in \
   "name: incus-web-agent" \
   "security.privileged: \"false\"" \
   "security.nesting: \"true\"" \
+  "raw.apparmor: |-" \
+  "signal peer=@{profile_name}//&unconfined," \
   "limits.cpu: \"2\"" \
   "limits.memory: 4GiB" \
   "limits.memory.enforce: \"hard\"" \
@@ -464,6 +470,7 @@ for needle in \
   '. "$ROOT/scripts/incus-web-lib.sh"' \
   "incus_cmd image import \"\$image_tar\" --alias \"\$SMOKE_IMAGE_ALIAS\"" \
   "incus_cmd init \"\$SMOKE_IMAGE_ALIAS\" \"\$SMOKE_CONTAINER_NAME\"" \
+  "validate_container_signals \"\$SMOKE_CONTAINER_NAME\"" \
   "node --version" \
   "python3 --version" \
   "go version" \

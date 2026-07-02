@@ -17,7 +17,9 @@ const workspaceId =
 const incusProject =
   process.env.INCUS_WEB_INCUS_PROJECT || "default";
 const incusContainer =
-  process.env.INCUS_WEB_INCUS_CONTAINER || process.env.CONTAINER_NAME || "incus-web";
+  process.env.INCUS_WEB_INCUS_CONTAINER ||
+  process.env.CONTAINER_NAME ||
+  "incus-web";
 const commandTimeoutMs = Number.parseInt(
   process.env.INCUS_WEB_PROVISIONER_COMMAND_TIMEOUT_MS || "8000",
   10,
@@ -317,6 +319,7 @@ async function getWorkspaceStatus(command, options) {
     cpuCount: parseCpuLimit(cpuLimit),
     memoryUsedBytes: numberValue(state.memory?.usage),
     memoryLimitBytes: parseByteLimit(memoryLimit),
+    rootDiskUsedBytes: rootDiskUsage(state),
     rootDiskLimitBytes: parseByteLimit(rootDiskSize),
     setupPhase: setupPhase(instance.config?.["user.incus-web.setup-phase"]),
     lastCheckedAt: new Date().toISOString(),
@@ -353,6 +356,54 @@ async function optionalText(args, options) {
   }
 }
 
+async function startWorkspace(command, options) {
+  const current = await getWorkspaceStatus(command, options);
+  if (current.state !== "running") {
+    await incusText(["start", incusContainer], options);
+  }
+  statusCache = undefined;
+  const status = await getWorkspaceStatus(command, options);
+  return {
+    workspaceId: command.workspace.id,
+    state: "running",
+    status,
+  };
+}
+
+async function stopWorkspace(command, options) {
+  const timeout = String(command.payload?.timeoutSeconds ?? 30);
+  const args = ["stop", incusContainer, "--timeout", timeout];
+  if (command.payload?.force) {
+    args.push("--force");
+  }
+  const current = await getWorkspaceStatus(command, options);
+  if (current.state !== "stopped") {
+    await incusText(args, options);
+  }
+  statusCache = undefined;
+  return {
+    workspaceId: command.workspace.id,
+    state: "stopped",
+    status: await getWorkspaceStatus(command, options),
+  };
+}
+
+async function restartWorkspace(command, options) {
+  const timeout = String(command.payload?.timeoutSeconds ?? 30);
+  const current = await getWorkspaceStatus(command, options);
+  if (current.state === "running") {
+    await incusText(["restart", incusContainer, "--timeout", timeout], options);
+  } else {
+    await incusText(["start", incusContainer], options);
+  }
+  statusCache = undefined;
+  return {
+    workspaceId: command.workspace.id,
+    state: "running",
+    status: await getWorkspaceStatus(command, options),
+  };
+}
+
 function mapIncusState(status, statusCode) {
   if (typeof status === "string") {
     switch (status.toLowerCase()) {
@@ -384,6 +435,22 @@ function numberValue(value) {
   return typeof value === "number" && Number.isFinite(value) && value >= 0
     ? value
     : undefined;
+}
+
+function rootDiskUsage(state) {
+  const disks = state.disk;
+  if (!disks || typeof disks !== "object") return undefined;
+  const root = disks.root;
+  if (root && typeof root === "object") {
+    return numberValue(root.usage);
+  }
+  for (const value of Object.values(disks)) {
+    if (value && typeof value === "object") {
+      const usage = numberValue(value.usage);
+      if (usage !== undefined) return usage;
+    }
+  }
+  return undefined;
 }
 
 function setupPhase(value) {
@@ -427,22 +494,42 @@ async function handleCommand(command, options) {
       error("invalid_input", "unsupported provisioner contract version"),
     );
   }
-  if (command.type !== "GetWorkspaceStatus") {
-    return operation(
-      command,
-      "failed",
-      error(
-        "invalid_state",
-        `${command.type} is not enabled in the host provisioner yet`,
-      ),
-    );
-  }
   try {
-    return operation(
-      command,
-      "succeeded",
-      await getCachedWorkspaceStatus(command, options),
-    );
+    switch (command.type) {
+      case "GetWorkspaceStatus":
+        return operation(
+          command,
+          "succeeded",
+          await getCachedWorkspaceStatus(command, options),
+        );
+      case "StartWorkspace":
+        return operation(
+          command,
+          "succeeded",
+          await startWorkspace(command, options),
+        );
+      case "StopWorkspace":
+        return operation(
+          command,
+          "succeeded",
+          await stopWorkspace(command, options),
+        );
+      case "RestartWorkspace":
+        return operation(
+          command,
+          "succeeded",
+          await restartWorkspace(command, options),
+        );
+      default:
+        return operation(
+          command,
+          "failed",
+          error(
+            "invalid_state",
+            `${command.type} is not enabled in the host provisioner yet`,
+          ),
+        );
+    }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return operation(
@@ -451,8 +538,8 @@ async function handleCommand(command, options) {
       error(
         message.includes("concurrency limit") ? "timeout" : "incus_unavailable",
         message.includes("concurrency limit")
-          ? "workspace status is temporarily busy"
-          : "failed to read workspace status from Incus",
+          ? "workspace operation is temporarily busy"
+          : "failed to complete workspace operation through Incus",
         true,
       ),
     );
