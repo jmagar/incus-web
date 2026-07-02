@@ -8,6 +8,11 @@ config:
   # reserved for explicitly trusted single-tenant escape hatches.
   security.privileged: "false"
   security.nesting: "true"
+  # Ubuntu/Incus AppArmor labels can include //&unconfined for nested/systemd
+  # process contexts. Without this explicit peer rule, kill(2) can return
+  # EPERM inside the container, which breaks service stops and child cleanup.
+  raw.apparmor: |-
+    signal peer=@{profile_name}//&unconfined,
 
   # Conservative demo limits. Tune through this profile if the demo needs more.
   limits.cpu: "2"

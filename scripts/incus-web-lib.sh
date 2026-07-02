@@ -298,6 +298,53 @@ container_bash() {
   incus_cmd exec "$name" -- bash -lc "$*"
 }
 
+validate_container_signals() {
+  local name="$1"
+
+  log "validating container signal delivery"
+  # This script is evaluated inside the container; keep expansions there.
+  # shellcheck disable=SC2016
+  container_bash "$name" 'set -euo pipefail
+kill -0 $$
+sleep 300 &
+child="$!"
+kill -0 "$child"
+kill "$child"
+wait "$child" 2>/dev/null || status="$?"
+case "${status:-0}" in
+  0|143)
+    ;;
+  *)
+    printf "child exited with unexpected status %s\n" "$status" >&2
+    exit 1
+    ;;
+esac
+if command -v systemctl >/dev/null 2>&1 &&
+  [[ -d /run/systemd/system ]] &&
+  systemctl list-units >/dev/null 2>&1; then
+  cat >/etc/systemd/system/incus-web-signal-smoke.service <<EOF
+[Unit]
+Description=incus-web signal smoke test
+
+[Service]
+Type=simple
+ExecStart=/bin/sleep 300
+EOF
+  systemctl daemon-reload
+  systemctl start incus-web-signal-smoke.service
+  systemctl stop incus-web-signal-smoke.service
+  if pgrep -f "^/bin/sleep 300$" >/dev/null; then
+    systemctl reset-failed incus-web-signal-smoke.service >/dev/null 2>&1 || true
+    rm -f /etc/systemd/system/incus-web-signal-smoke.service
+    systemctl daemon-reload
+    exit 1
+  fi
+  systemctl reset-failed incus-web-signal-smoke.service >/dev/null 2>&1 || true
+  rm -f /etc/systemd/system/incus-web-signal-smoke.service
+  systemctl daemon-reload
+fi'
+}
+
 push_tailscale_env() {
   local name="$1"
   local tmp_file
@@ -1459,6 +1506,7 @@ validate_container() {
   fi
 
   log "validating toolchain and network boundaries"
+  validate_container_signals "$name"
 
   agent_check() {
     local command="$1"
